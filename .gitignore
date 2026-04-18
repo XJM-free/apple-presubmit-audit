@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.p8
+*.pem
+.env
+.DS_Store
+apps.json
+.venv/
+venv/

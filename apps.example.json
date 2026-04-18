@@ -1,0 +1,12 @@
+[
+  {
+    "name": "MyApp1",
+    "project": "/Users/you/Code/MyApp1",
+    "bundle_id": "com.example.myapp1"
+  },
+  {
+    "name": "MyApp2",
+    "project": "/Users/you/Code/MyApp2",
+    "bundle_id": "com.example.myapp2"
+  }
+]
