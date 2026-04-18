@@ -95,7 +95,7 @@ Each rule maps to an actual rejection pattern observed in indie apps. A few gene
 - **2.3.8 plist-name-matches-asc** — Renamed an app in App Store Connect after submitting the binary, forgot to update `CFBundleDisplayName`. Apple rejected on next submit (and the one after). Easy to forget, easy to grep.
 - **2.5.1 NSHealthShareUsageDescription** — Declared `NSHealthShareUsageDescription` in `Info.plist` "just in case", never actually imported `HealthKit`. Apple rejected: a permission string with no matching framework code looks deceptive.
 - **CUSTOM detector-no-hardware-disclaimer** — Magnetometer-based app described as "metal detector". Apple's reviewer assumed it needed an MFi accessory and asked for a hardware demo video. Adding "100% software, uses iPhone built-in magnetometer" to the first sentence resolved it.
-- **3.1.2(c) auto-renewing-CTA** — Subscribe button said "Subscribe — $9.99/yr" instead of "Subscribe — $9.99/yr **auto-renewing**". One missing word, repeat rejections across multiple unrelated apps. Now caught at audit time.
+- **3.1.2(c) auto-renewing-CTA** — Subscribe button said "Subscribe — $9.99/yr" instead of "Subscribe — $9.99/yr **auto-renewing**". One missing word in the CTA text is enough to trigger this rejection.
 
 ## Limitations
 
