@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.1] - 2026-04-18
+
+### Added
+- **2.3.6 age-rating-set** — verify `appStoreAgeRating` is set to FOUR_PLUS / NINE_PLUS / TWELVE_PLUS / SEVENTEEN_PLUS
+- **2.3.6 appinfo-not-rejected** — flag when `appInfo.state == REJECTED` (means age rating data is stale; must re-save in ASC web UI). Found in the wild on a v1.0.2 resubmission rejected with "no rating assigned" despite `appStoreAgeRating: FOUR_PLUS` because the previous appInfo was stuck in REJECTED state.
+
 ## [0.2.0] - 2026-04-18
 
 ### Added

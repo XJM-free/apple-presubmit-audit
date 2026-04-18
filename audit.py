@@ -88,6 +88,8 @@ class ASCClient:
         # appInfo (name, privacy URL, age rating)
         infos = self.get(f"/v1/apps/{app_id}/appInfos").get("data", [])
         if infos:
+            out["appinfo_state"] = infos[0]["attributes"].get("state")
+            out["appStoreAgeRating"] = infos[0]["attributes"].get("appStoreAgeRating")
             ilocs = self.get(f"/v1/appInfos/{infos[0]['id']}/appInfoLocalizations").get("data", [])
             ien = next((l for l in ilocs if l["attributes"]["locale"].startswith("en")), ilocs[0] if ilocs else None)
             if ien:
@@ -375,6 +377,18 @@ def audit_app(root, asc):
     add("5.1.1(ix) gambling-none", "blocker",
         asc.get("gamblingSimulated") == "NONE",
         f"gamblingSimulated={asc.get('gamblingSimulated')} (must be NONE for individuals)")
+
+    # 2.3.6 — App Store age rating must be assigned
+    age_rating = asc.get("appStoreAgeRating")
+    valid_ratings = {"FOUR_PLUS", "NINE_PLUS", "TWELVE_PLUS", "SEVENTEEN_PLUS"}
+    add("2.3.6 age-rating-set", "blocker", age_rating in valid_ratings,
+        f"appStoreAgeRating={age_rating} (must be FOUR_PLUS / NINE_PLUS / TWELVE_PLUS / SEVENTEEN_PLUS)")
+
+    # 2.3.6 — appInfo state should not be REJECTED (means age rating not applied)
+    appinfo_state = asc.get("appinfo_state")
+    add("2.3.6 appinfo-not-rejected", "blocker",
+        appinfo_state not in ("REJECTED",),
+        f"appInfo state={appinfo_state} (REJECTED → re-save Age Rating in ASC web UI to refresh)")
 
     # 5.1.1(ix) — regulated industry keywords
     forbidden = ["banking", "blood pressure monitor", "cryptocurrency exchange",
