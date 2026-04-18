@@ -359,12 +359,43 @@ def audit_app(root, asc):
     add("5.1.1(i) privacy-asc", "blocker",
         bool(asc.get("privacyPolicyUrl")),
         "Privacy Policy URL missing in App Store Connect")
-    has_priv_in_app = (
-        bool(grep_dir(root, r"privacy[-_]?policy"))
-        or "rivacy" in (Path(paywall).read_text(errors="ignore") if paywall else "")
-    )
+    privacy_patterns = [
+        r"[Pp]rivacy.{0,3}[Pp]olicy",  # Privacy Policy / privacy-policy / privacy_policy
+        r"/privacy",                      # URL containing /privacy
+        r"PrivacyPolicy",
+        r"隐私政策",
+    ]
+    has_priv_in_app = any(grep_dir(root, p) for p in privacy_patterns)
     add("5.1.1(i) privacy-in-app", "blocker", has_priv_in_app,
         "Privacy Policy link not found in app code")
+
+    # 5.1.1(i) — Privacy URL must be reachable (HTTP 200) — Apple's automated review fetches it
+    privacy_url = asc.get("privacyPolicyUrl") or ""
+    if privacy_url:
+        try:
+            import urllib.request, ssl
+            req = urllib.request.Request(privacy_url, method="HEAD",
+                                          headers={"User-Agent": "Mozilla/5.0"})
+            ctx = ssl.create_default_context()
+            with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
+                code = resp.status
+        except Exception as e:
+            code = 0
+        add("5.1.1(i) privacy-url-reachable", "blocker", 200 <= (code or 0) < 300,
+            f"Privacy URL HTTP {code} (must be 200; Apple review will fail)")
+
+    support_url = asc.get("supportUrl") or ""
+    if support_url:
+        try:
+            import urllib.request, ssl
+            req = urllib.request.Request(support_url, method="HEAD",
+                                          headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=8, context=ssl.create_default_context()) as resp:
+                code = resp.status
+        except Exception:
+            code = 0
+        add("1.5 support-url-reachable", "blocker", 200 <= (code or 0) < 300,
+            f"Support URL HTTP {code} (must be 200)")
 
     # 5.1.1(v) — Account deletion (if account exists)
     has_account = bool(grep_dir(root, r"signIn|register|createAccount|loginEmail"))
