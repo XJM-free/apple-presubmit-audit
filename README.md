@@ -1,6 +1,6 @@
 # Apple App Store Pre-Submit Audit
 
-> Catches 70+ App Store Review rejections **before** you hit Submit.
+> 40+ checks across all 5 App Store Review Guideline categories — catches preventable rejections **before** you hit Submit.
 > Built from real rejection patterns common to indie iOS developers.
 
 ## Why this exists
@@ -22,7 +22,7 @@ If you're an indie shipping carefully, this saves you days. If you're trying to 
 - Doesn't bypass any guideline (every rule here is a guideline restated mechanically)
 - Doesn't replace careful design, testing, or honest description writing
 
-## What it checks (70+ rules across 5 categories)
+## What it checks (40+ rules across 5 categories + custom)
 
 | Category | Sample checks |
 |---|---|
@@ -115,6 +115,10 @@ add("CATEGORY.SECTION rule-id", "blocker|high|low",
 ```
 
 Add a comment citing the rejection that motivated the rule.
+
+## Contact
+
+Issues, PRs, or feedback: open a [GitHub issue](https://github.com/XJM-free/apple-presubmit-audit/issues) or email **jie.xiang.jm@gmail.com**.
 
 ## License
 

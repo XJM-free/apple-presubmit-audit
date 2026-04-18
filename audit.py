@@ -161,10 +161,18 @@ def audit_app(root, asc):
 
     # 1.4.1 — no false medical sensor claims
     medical = ["measure blood pressure", "measure blood sugar", "measure glucose",
-               "measure body temperature", "measure spo2", "ekg measurement"]
+               "measure body temperature", "measure spo2", "ekg measurement",
+               "measure heart rate", "measure pulse", "measure blood oxygen",
+               "ecg recording", "pulse oximeter", "diagnose"]
     add("1.4.1 medical-sensor-claim", "blocker",
         not any(c in desc for c in medical),
         "claims to measure medical values without certified hardware")
+
+    # 1.3 — Kids Category strict rules
+    if "kids" in (asc.get("category", "") or "").lower() or "for kids" in desc:
+        add("1.3 kids-no-3rd-party-ads", "blocker",
+            not any(grep_dir(root, p) for p in ["AdMob", "FBAds", "GADBanner"]),
+            "Kids Category app must not use 3rd-party advertising")
 
     # 1.5 — Support URL present
     add("1.5 support-url", "high",
@@ -194,10 +202,16 @@ def audit_app(root, asc):
     add("2.3.1(a) notes-length", "blocker",
         len(notes) > 200,
         f"review notes too short ({len(notes)} chars, need >200)")
-    notes_required = ["app", "review", "external", "region"]
+    notes_required_groups = [
+        ["app", "purpose", "describe"],         # purpose
+        ["review", "test", "step", "how to"],    # test steps
+        ["external", "third-party", "api", "service", "backend"],  # external services
+        ["region", "country", "market", "available", "english"],   # region/locale
+    ]
+    notes_score = sum(1 for grp in notes_required_groups if any(w in notes for w in grp))
     add("2.3.1(a) notes-required-items", "high",
-        sum(1 for w in notes_required if w in notes) >= 3,
-        "notes missing required disclosures (purpose/test steps/external services/region)")
+        notes_score >= 3,
+        f"notes missing items ({notes_score}/4: purpose/test steps/external services/region)")
 
     # 2.3.7 — App name length ≤ 30
     add("2.3.7 name-length", "blocker",
@@ -255,16 +269,18 @@ def audit_app(root, asc):
                 except Exception:
                     pass
 
-            # 3.1.1 — free trial disclosure
-            has_trial = "free trial" in pc.lower() or "free_trial" in pc.lower()
+            # 3.1.1 — free trial disclosure (multi-language hints)
+            full = (pc + xcs).lower()
+            has_trial = any(k in full for k in ["free trial", "free_trial", "free-trial",
+                                                "trial period", "试用"])
             if has_trial:
-                pcl = pc.lower()
-                discloses = (
-                    ("after" in pcl or "then" in pcl)
-                    and ("/yr" in pcl or "/year" in pcl or "/mo" in pcl or "auto-renew" in pcl)
-                )
+                disclosure_markers = ["after", "then", "afterward", "之后", "试用结束"]
+                pricing_markers = ["/yr", "/year", "/mo", "/month", "auto-renew",
+                                   "自动续订", "自动续费"]
+                discloses = (any(m in full for m in disclosure_markers)
+                             and any(p in full for p in pricing_markers))
                 add("3.1.1 trial-disclosure", "blocker", discloses,
-                    "free trial mentioned but post-trial price/period not disclosed")
+                    "free trial mentioned but post-trial price/period not clearly disclosed")
 
             # 3.1.2(c) — auto-renewing CTA
             has_ar = bool(re.search(r"auto-renewing|auto-renews", pc + xcs, re.I))
@@ -303,19 +319,24 @@ def audit_app(root, asc):
         "code appears to force rating before functionality unlock")
 
     # ═══ 4. DESIGN ════════════════════════════════════════════════════════════
-    # 4.2 / 4.3 — minimum functionality + Spam (≥3 unique views)
+    # 4.2 / 4.3 — minimum functionality + Spam (≥3 unique view-like Swift files)
+    BOILERPLATE = {"PaywallView.swift", "SettingsView.swift", "MainTabView.swift",
+                   "OnboardingView.swift", "SubscriptionView.swift", "ContentView.swift",
+                   "RootView.swift", "AppView.swift"}
+    # search anywhere for *View.swift, not just /Views/ folder
     custom_views = []
-    for p in glob.glob(f"{root}/**/Views/*.swift", recursive=True):
+    for p in glob.glob(f"{root}/**/*View.swift", recursive=True):
+        if "/build/" in p or "/.build/" in p or "Test" in p:
+            continue
         n = os.path.basename(p)
-        if n not in ("PaywallView.swift", "SettingsView.swift", "MainTabView.swift",
-                     "OnboardingView.swift", "SubscriptionView.swift"):
+        if n not in BOILERPLATE:
             custom_views.append(n)
     add("4.2 minimum-functionality", "high",
         len(custom_views) >= 2,
-        f"only {len(custom_views)} unique custom views (need ≥2)")
+        f"only {len(custom_views)} unique *View.swift files (need ≥2)")
     add("4.3 unique-views-anti-spam", "high",
         len(custom_views) >= 3,
-        f"need ≥3 unique custom views to avoid 4.3 Spam, has {len(custom_views)}")
+        f"need ≥3 unique *View.swift files to avoid 4.3 Spam, has {len(custom_views)}")
 
     # 4.8 — third-party login requires Apple Sign-In
     has_3rd = bool(grep_dir(root, r"GIDSignIn|FBSDKLogin|TwitterAuth"))
@@ -323,6 +344,13 @@ def audit_app(root, asc):
         has_apple = bool(grep_dir(root, r"SignInWithAppleButton|ASAuthorizationAppleIDProvider"))
         add("4.8 sign-in-with-apple", "blocker", has_apple,
             "third-party login (Google/FB/Twitter) requires Sign in with Apple")
+
+    # 4.5.4 — push notifications must be opt-in, not for marketing without consent
+    if "UNUserNotificationCenter" in " ".join(grep_dir(root, "UNUserNotificationCenter")):
+        # Soft check: ensure opt-in dialog code exists
+        has_optin = bool(grep_dir(root, r"requestAuthorization|requestNotificationAuthorization"))
+        add("4.5.4 push-opt-in", "high", has_optin,
+            "push notifications used but no requestAuthorization call found")
 
     # ═══ 5. LEGAL ═════════════════════════════════════════════════════════════
     # 5.1.1(i) — Privacy Policy in ASC + in app
@@ -350,10 +378,26 @@ def audit_app(root, asc):
 
     # 5.1.1(ix) — regulated industry keywords
     forbidden = ["banking", "blood pressure monitor", "cryptocurrency exchange",
-                 "casino", "sports betting"]
+                 "casino", "sports betting", "real money gambling", "lottery ticket"]
     add("5.1.1(ix) regulated-fields", "blocker",
         not any(w in desc for w in forbidden),
         "description contains regulated-industry keywords forbidden to individual devs")
+
+    # 5.1.1(iii) — data sharing must require user opt-in (heuristic)
+    if "share" in desc and ("data" in desc or "personal" in desc):
+        has_consent = bool(grep_dir(root, r"requestAuthorization|UIAlertController.*data|consent"))
+        add("5.1.1(iii) data-sharing-opt-in", "high", has_consent,
+            "description mentions data sharing but no consent dialog code found")
+
+    # 5.2.1 — content rights (heuristic: warn if tutorial/quote content without attribution)
+    if any(w in desc for w in ["famous quote", "movie clip", "song lyric", "celebrity"]):
+        add("5.2.1 content-ownership", "blocker", False,
+            "description hints at third-party content; verify you own rights or have license")
+
+    # 5.4 — VPN/Network Extension: must justify in plist
+    if "NetworkExtension" in str(plist) or "vpn" in desc:
+        add("5.4 vpn-justification", "high", "vpn" in notes,
+            "VPN/NetworkExtension entitlement requires justification in review notes")
 
     # ═══ CUSTOM (lessons learned from real rejections) ════════════════════════
     # Detector / Meter / Scanner class apps must declare "no external hardware"
