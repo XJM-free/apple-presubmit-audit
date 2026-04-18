@@ -1,5 +1,10 @@
 # Apple App Store Pre-Submit Audit
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
+![Rules: 40+](https://img.shields.io/badge/rules-40+-success)
+
 > 40+ checks across all 5 App Store Review Guideline categories — catches preventable rejections **before** you hit Submit.
 > Built from real rejection patterns common to indie iOS developers.
 
@@ -59,6 +64,12 @@ python3 audit.py --project ~/MyApp --no-asc
 
 # Multiple apps from config file:
 python3 audit.py --config apps.json
+
+# CI-friendly: only print blockers, exit 1 on failure
+python3 audit.py --config apps.json --quiet
+
+# JSON output for scripting:
+python3 audit.py --config apps.json --json
 ```
 
 `apps.json` format:

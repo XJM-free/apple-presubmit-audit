@@ -440,9 +440,16 @@ def audit_app(root, asc):
 SEV_ICON = {"blocker": "🔴", "high": "⚠️ ", "low": "ℹ️ "}
 
 
-def print_report(name, results):
+def print_report(name, results, quiet=False):
     failed = [r for r in results if not r[2]]
     blockers = [r for r in failed if r[1] == "blocker"]
+    if quiet:
+        # Only print apps with blockers in quiet mode
+        if blockers:
+            print(f"🔴 {name}: {len(blockers)} blocker(s)")
+            for rule, sev, ok, msg in blockers:
+                print(f"   {rule}: {msg}")
+        return len(blockers)
     icon = "✅" if not failed else ("🔴" if blockers else "⚠️ ")
     print(f"\n{icon} {name:20s} [{len(results)-len(failed)}/{len(results)} passed]   blockers={len(blockers)}")
     for rule, sev, ok, msg in failed:
@@ -450,9 +457,24 @@ def print_report(name, results):
     return len(blockers)
 
 
+def json_report(all_results):
+    """Emit machine-readable JSON for CI integration."""
+    out = []
+    for name, results in all_results.items():
+        out.append({
+            "app": name,
+            "rules": [
+                {"rule": r, "severity": s, "passed": ok, "message": m}
+                for r, s, ok, m in results
+            ],
+            "blockers": sum(1 for r, s, ok, _ in results if not ok and s == "blocker"),
+        })
+    print(json.dumps({"apps": out, "total_blockers": sum(a["blockers"] for a in out)}, indent=2))
+
+
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 def main():
-    p = argparse.ArgumentParser(description="Apple App Store pre-submit audit (70+ rules)")
+    p = argparse.ArgumentParser(description="Apple App Store pre-submit audit (40+ rules)")
     p.add_argument("--project", help="Path to Xcode project root")
     p.add_argument("--bundle-id", help="Bundle identifier (for ASC lookup)")
     p.add_argument("--config", help="JSON file with multiple apps to audit")
@@ -461,6 +483,10 @@ def main():
     p.add_argument("--key-file", default=os.getenv("ASC_KEY_FILE"))
     p.add_argument("--no-asc", action="store_true",
                    help="Skip App Store Connect fetch (code-only audit, lots of false negatives)")
+    p.add_argument("--quiet", "-q", action="store_true",
+                   help="Only print apps with blockers (for CI)")
+    p.add_argument("--json", action="store_true",
+                   help="Emit JSON output (for CI / scripting)")
     args = p.parse_args()
 
     apps = []
@@ -482,22 +508,33 @@ def main():
         asc_client = ASCClient(args.key_id, args.issuer_id, args.key_file)
 
     total_blockers = 0
+    all_results = {}
     for name, root, bid in apps:
         if not os.path.isdir(root):
-            print(f"⚠️  {name}: project path not found: {root}")
+            if not args.quiet and not args.json:
+                print(f"⚠️  {name}: project path not found: {root}")
             continue
         asc_data = {}
         if asc_client and bid:
             aid = asc_client.app_id_for_bundle(bid)
             if aid:
                 asc_data = asc_client.fetch_metadata(aid)
-            else:
+            elif not args.quiet and not args.json:
                 print(f"⚠️  {name}: bundle {bid} not found in ASC")
         results = audit_app(root, asc_data)
-        total_blockers += print_report(name, results)
+        all_results[name] = results
+        if not args.json:
+            total_blockers += print_report(name, results, quiet=args.quiet)
 
-    print(f"\n{'='*70}")
-    print(f"Total blockers across all apps: {total_blockers}")
+    if args.json:
+        json_report(all_results)
+        total_blockers = sum(
+            sum(1 for _, sev, ok, _ in rs if not ok and sev == "blocker")
+            for rs in all_results.values()
+        )
+    elif not args.quiet:
+        print(f"\n{'='*70}")
+        print(f"Total blockers across all apps: {total_blockers}")
     sys.exit(1 if total_blockers else 0)
 
 
