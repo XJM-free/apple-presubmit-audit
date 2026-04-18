@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0] - 2026-04-18
+
+### Added
+- **5.1.1(i) privacy-url-reachable**: HEAD request to verify Privacy URL returns 200. Apple's automated review fetches it; 404 = hard reject.
+- **1.5 support-url-reachable**: same check for Support URL.
+
+### Changed
+- **3.2.2(x) no-forced-rating**: tightened patterns to detect actual gating code (`SKStoreReviewController.*if.*!rated`, `guard.*hasRated.*else`) instead of free-text matches like `rate.*before` which produced false positives on description text "review and adjust before publishing".
+- **4.2 / 4.3 spam check**: combine multiple signals — unique View files + Service/Manager/ViewModel/Store/Repository/Client classes + files in `/Models/` + total non-boilerplate Swift files. Single-purpose utility apps with engine classes (e.g. magnetometer with `MagnetEngine.swift` + `RootView.swift`) no longer false-flagged.
+- **5.1.1(i) privacy-in-app**: broadened pattern to catch `Privacy Policy` (with space), URL paths containing `/privacy`, `PrivacyPolicy` class names, and Chinese 隐私政策. Old kebab-only regex missed real shipping apps.
+
+### Fixed
+- False positive on `2.3.8 plist-name-matches-asc` when ASC name has a tagline (e.g., `MyApp` plist matches `MyApp - Tracker` ASC name)
+- False positive on `4.3 unique-views` for apps using flat structure (no `/Views/` folder)
+- False positive on `3.2.2(x)` from description text containing "before"
+
 ## [0.2.1] - 2026-04-18
 
 ### Added

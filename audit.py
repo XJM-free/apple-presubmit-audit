@@ -314,31 +314,50 @@ def audit_app(root, asc):
         "eula" in desc or "terms of use" in desc or "stdeula" in desc,
         "EULA / Terms of Use link missing in App Store description")
 
-    # 3.2.2(x) — no forced rating
-    bad_review = ["rate.*before", "force.*review", "require.*rating"]
+    # 3.2.2(x) — no forced rating (precise: actual gating code, not description text)
+    bad_review = [
+        "SKStoreReviewController.*if.*!rated",
+        "guard.*hasRated.*else",
+        "requestReview\\(\\).*lockFeature",
+    ]
     add("3.2.2(x) no-forced-rating", "high",
         not any(grep_dir(root, p) for p in bad_review),
         "code appears to force rating before functionality unlock")
 
     # ═══ 4. DESIGN ════════════════════════════════════════════════════════════
-    # 4.2 / 4.3 — minimum functionality + Spam (≥3 unique view-like Swift files)
+    # 4.2 / 4.3 — minimum functionality + Spam
+    # Smart heuristic: combine unique views + services/managers + models + total non-boilerplate
     BOILERPLATE = {"PaywallView.swift", "SettingsView.swift", "MainTabView.swift",
                    "OnboardingView.swift", "SubscriptionView.swift", "ContentView.swift",
                    "RootView.swift", "AppView.swift"}
-    # search anywhere for *View.swift, not just /Views/ folder
+
     custom_views = []
-    for p in glob.glob(f"{root}/**/*View.swift", recursive=True):
-        if "/build/" in p or "/.build/" in p or "Test" in p:
+    service_count = 0
+    model_count = 0
+    total_swift = 0
+    for p in glob.glob(f"{root}/**/*.swift", recursive=True):
+        if "/build/" in p or "/.build/" in p or "Test" in p or "/Pods/" in p:
             continue
         n = os.path.basename(p)
-        if n not in BOILERPLATE:
+        if n.endswith("View.swift") and n not in BOILERPLATE:
             custom_views.append(n)
+        if any(n.endswith(s) for s in ("Service.swift","Manager.swift","ViewModel.swift",
+                                       "Store.swift","Repository.swift","Client.swift")):
+            service_count += 1
+        if "/Models/" in p or "/Model/" in p:
+            model_count += 1
+        if n not in BOILERPLATE and n not in ("AppDelegate.swift","SceneDelegate.swift") \
+           and not n.endswith("App.swift"):
+            total_swift += 1
+
+    func_score = len(custom_views) + service_count + model_count
+
     add("4.2 minimum-functionality", "high",
-        len(custom_views) >= 2,
-        f"only {len(custom_views)} unique *View.swift files (need ≥2)")
+        len(custom_views) >= 2 or func_score >= 3 or total_swift >= 4,
+        f"{len(custom_views)} views + {service_count} services + {model_count} models, total {total_swift} non-boilerplate")
     add("4.3 unique-views-anti-spam", "high",
-        len(custom_views) >= 3,
-        f"need ≥3 unique *View.swift files to avoid 4.3 Spam, has {len(custom_views)}")
+        len(custom_views) >= 3 or func_score >= 4 or total_swift >= 5,
+        f"{len(custom_views)} views + {service_count} services + {model_count} models, total {total_swift} non-boilerplate")
 
     # 4.8 — third-party login requires Apple Sign-In
     has_3rd = bool(grep_dir(root, r"GIDSignIn|FBSDKLogin|TwitterAuth"))
