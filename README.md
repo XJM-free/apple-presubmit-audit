@@ -3,10 +3,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
-![Rules: 40+](https://img.shields.io/badge/rules-40+-success)
+![Rules: 70+](https://img.shields.io/badge/rules-70+-success)
+![Lessons: 50+ rejections](https://img.shields.io/badge/distilled%20from-50%2B%20real%20rejections-orange)
 
-> 40+ checks across all 5 App Store Review Guideline categories — catches preventable rejections **before** you hit Submit.
-> Built from real rejection patterns common to indie iOS developers.
+> **70+ static checks codifying ~50 real Apple App Store rejections** across one indie developer's submission history.
+> Catches preventable mistakes — plist mismatches, missing "auto-renewing" CTAs, declared-but-unused permissions, paywall-benefit lies, SwiftData migration crashes — **before you hit Submit**.
+>
+> Maintained by an indie dev who has shipped [53 iOS apps](https://github.com/XJM-free/iOS-apps-portfolio). Each new rule maps to a specific rejection that cost a week of resubmission.
 
 ## Why this exists
 
