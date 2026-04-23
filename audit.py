@@ -710,6 +710,65 @@ def audit_app(root, asc):
                     r"UNUserNotificationCenter|UNNotificationRequest|UNTimeIntervalNotificationTrigger",
                     "notification/reminder claimed but no UNUserNotificationCenter code",
                 ),
+                # PDF export
+                "pdf_export": (
+                    lambda txt: "pdf" in txt and any(
+                        w in txt for w in ("export", "share", "导出", "分享", "report", "报告")
+                    ),
+                    r"PDFKit|UIGraphicsPDFRenderer|PDFDocument|CGPDFContextCreate",
+                    "PDF export claimed but no PDFKit/UIGraphicsPDFRenderer code",
+                ),
+                # Calendar export — EventKit
+                "calendar_export": (
+                    lambda txt: any(w in txt for w in ("calendar", "日历", "ical", "ics"))
+                        and any(w in txt for w in ("export", "sync", "导出", "导入", "同步", "add to")),
+                    r"EKEventStore|EKEvent|import EventKit",
+                    "Calendar export/sync claimed but no EventKit code",
+                ),
+                # Photo attach
+                "photo_attach": (
+                    lambda txt: any(w in txt for w in ("photo", "image", "picture",
+                        "照片", "图片", "attach", "附件", "拍照")),
+                    r"PhotosPicker|UIImagePickerController|PHPickerViewController|AVCaptureDevice",
+                    "Photo attach claimed but no PhotosPicker/PHPicker/UIImagePickerController code",
+                ),
+                # Charts / 图表
+                "charts": (
+                    lambda txt: any(w in txt for w in ("chart", "graph", "图表", "趋势"))
+                        and any(w in txt for w in ("detail", "progress", "trend", "stats",
+                            "详细", "进度", "趋势", "统计")),
+                    r"import Charts|BarMark|LineMark|PointMark|SectorMark|RuleMark",
+                    "Detailed charts/trends claimed but no Swift Charts code",
+                ),
+                # Themes / 主题色
+                "themes": (
+                    lambda txt: any(w in txt for w in ("theme", "color theme", "skin",
+                        "主题", "皮肤", "配色")),
+                    r"enum\s+\w*Theme|theme\.primary|theme\.background|@AppStorage.*theme",
+                    "Theme/color skin claimed but no theme enum/AppStorage theme code",
+                ),
+                # Multi-X manager (e.g. multi-kit, multi-budget, multi-tank)
+                "multi_x": (
+                    lambda txt: any(w in txt for w in ("multiple kits", "multiple budgets",
+                        "multi-tank", "多套", "多个", "多份")),
+                    r"selectedKitId|kitList|currentKit|switchKit|allKits",
+                    "Multi-X management claimed but no kit/budget/tank-switching code",
+                ),
+                # Voice guidance / 语音引导
+                "voice_guidance": (
+                    lambda txt: any(w in txt for w in ("voice guidance", "voice over",
+                        "语音引导", "语音播报", "音频引导")),
+                    r"AVSpeechSynthesizer|AVSpeechUtterance",
+                    "Voice guidance claimed but no AVSpeechSynthesizer code",
+                ),
+                # Double elimination bracket
+                "double_elimination": (
+                    lambda txt: any(w in txt for w in ("double elimination",
+                        "双败", "双淘汰", "loser bracket")),
+                    r"loserBracket|losersBracket|doubleElimination.*generate|"
+                    r"buildLoserBracket",
+                    "Double elimination claimed but no loser-bracket generation code",
+                ),
             }
             for rule_name, (matches, code_pat, msg) in BENEFIT_CHECKS.items():
                 if matches(pc):
@@ -723,6 +782,101 @@ def audit_app(root, asc):
     add("CUSTOM all-locales-have-support-url", "blocker",
         not missing,
         f"locales missing supportUrl: {missing}")
+
+    # CUSTOM I: NSXxxUsageDescription declared but framework code missing
+    # (5.1.1 — declared permission must be used; symptoms beyond 2.5.1 covered above)
+    USAGE_FRAMEWORK_PAIRS = {
+        "NSCameraUsageDescription":
+            r"AVCaptureDevice|UIImagePickerController|PhotosPicker|VNRecognize|"
+            r"PHPickerViewController|AVCaptureSession",
+        "NSMotionUsageDescription":
+            r"CMMotionManager|CMPedometer|CMAltimeter|startGyroUpdates|"
+            r"startAccelerometerUpdates|startMagnetometerUpdates|startDeviceMotionUpdates",
+        "NSCalendarsUsageDescription":
+            r"EKEventStore|EKEvent|import EventKit",
+        "NSContactsUsageDescription":
+            r"CNContactStore|import Contacts|CNContactPickerViewController",
+        "NSRemindersUsageDescription":
+            r"EKReminder|import EventKit",
+        "NSUserNotificationsUsageDescription":
+            r"UNUserNotificationCenter|UNNotificationRequest",
+        "NSBluetoothAlwaysUsageDescription":
+            r"CBCentralManager|CBPeripheralManager|import CoreBluetooth",
+    }
+    for key, code_pat in USAGE_FRAMEWORK_PAIRS.items():
+        if key in plist:
+            has_code = bool(grep_dir(root, code_pat))
+            add(f"CUSTOM 5.1.1 {key}", "blocker", has_code,
+                f"{key} declared in Info.plist but no matching framework code "
+                f"(grep: {code_pat[:60]}...)")
+
+    # CUSTOM J: Paywall legal Link colors must be visible (not white-on-white).
+    # Pattern observed in production: HStack of [Restore button + Privacy
+    # Link + Terms Link] all wrapped in `.foregroundColor(.white.opacity(0.5))`
+    # makes the Links nearly invisible. Apple requires Privacy + Terms links
+    # to be clearly clickable (3.1.2(c)).
+    if paywall_path:
+        try:
+            pc_raw = Path(paywall_path).read_text(errors="ignore")
+            # Check if any HStack/VStack containing Link uses faded white color
+            link_colors_bad = re.findall(
+                r'(Link\(.{0,80}destination:.+?\}.{0,200}\.foregroundColor\(\.white\.opacity\([\d.]+\)|'
+                r'\.foregroundColor\(\.white\.opacity\([\d.]+\).{0,300}Link\()',
+                pc_raw, re.DOTALL)
+            add("CUSTOM 3.1.2(c) paywall-legal-link-color", "blocker",
+                not link_colors_bad,
+                "Paywall Privacy/Terms Link wrapped in "
+                "`.foregroundColor(.white.opacity(.x))` — links invisible. "
+                "Use `.foregroundStyle(.blue)` on each Link instead.")
+        except Exception:
+            pass
+
+    # CUSTOM K: SwiftData @Model field defaults — missing defaults crash
+    # existing users on schema migration when adding new fields.
+    bad_model_fields = []
+    for p in glob.glob(f"{root}/**/*.swift", recursive=True):
+        if "/build/" in p or "/.build/" in p: continue
+        try:
+            c = Path(p).read_text(errors="ignore")
+            # Find @Model class blocks
+            for m_class in re.finditer(r"@Model[^{]*?\bclass\s+(\w+)\s*\{", c):
+                cls_name = m_class.group(1)
+                start = m_class.end() - 1
+                depth = 0; end = start
+                for i in range(start, len(c)):
+                    if c[i] == "{": depth += 1
+                    elif c[i] == "}":
+                        depth -= 1
+                        if depth == 0: end = i; break
+                body = c[start:end+1]
+                # Find `var name: Type` without `=` default value
+                for m_field in re.finditer(
+                    r'^\s*var\s+(\w+)\s*:\s*(Bool|Int|Double|String|Date)\s*$',
+                    body, re.MULTILINE):
+                    bad_model_fields.append(f"{cls_name}.{m_field.group(1)}: {m_field.group(2)}")
+        except Exception:
+            pass
+    add("CUSTOM swiftdata-model-defaults", "high",
+        not bad_model_fields,
+        f"@Model fields without property-level default values — schema "
+        f"migration will crash existing users when this field is added: "
+        f"{bad_model_fields[:5]}")
+
+    # CUSTOM L: AI service body must include `model` field (DeepSeek/OpenAI
+    # require it; nginx reverse-proxy can't inject so client must send it).
+    ai_files = grep_dir(root, r"/api/ai|/api/vision|api\.deepseek\.com|api\.openai\.com|api\.anthropic\.com")
+    for p in ai_files:
+        try:
+            c = Path(p).read_text(errors="ignore")
+            if 'URLSession' in c or 'request.httpBody' in c:
+                # Look for body dict with messages but check for model
+                if re.search(r'"messages"\s*:', c) and not re.search(r'"model"\s*:', c):
+                    add(f"CUSTOM ai-body-missing-model-{os.path.basename(p)}",
+                        "blocker", False,
+                        f"{os.path.basename(p)}: AI request body has 'messages' "
+                        f"but no 'model' field → DeepSeek API returns 400")
+        except Exception:
+            pass
 
     return results
 
