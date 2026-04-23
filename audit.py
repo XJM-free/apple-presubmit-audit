@@ -97,12 +97,41 @@ class ASCClient:
                 out["privacyPolicyUrl"] = ien["attributes"].get("privacyPolicyUrl") or ""
             ard = self.get(f"/v1/appInfos/{infos[0]['id']}/ageRatingDeclaration").get("data") or {}
             out["gamblingSimulated"] = (ard.get("attributes") or {}).get("gamblingSimulated", "?")
-        # subscription state
+        # subscription state + group locs + per-sub availability/territories
         groups = self.get(f"/v1/apps/{app_id}/subscriptionGroups").get("data", [])
-        if groups:
-            subs = self.get(f"/v1/subscriptionGroups/{groups[0]['id']}/subscriptions").get("data", [])
-            if subs:
-                out["sub_state"] = subs[0]["attributes"]["state"]
+        out["sub_group_loc_states"] = []  # list of (group_id, locale, state)
+        out["sub_states"] = []            # list of (productId, state)
+        out["sub_territories"] = {}       # productId -> count
+        for g in groups:
+            gid = g["id"]
+            glocs = self.get(f"/v1/subscriptionGroups/{gid}/subscriptionGroupLocalizations").get("data", [])
+            for l in glocs:
+                la = l["attributes"]
+                out["sub_group_loc_states"].append((gid, la.get("locale"), la.get("state")))
+            subs = self.get(f"/v1/subscriptionGroups/{gid}/subscriptions").get("data", [])
+            for sub in subs:
+                sid = sub["id"]
+                sa = sub["attributes"]
+                out["sub_states"].append((sa.get("productId"), sa.get("state")))
+                terrs = self.get(f"/v1/subscriptionAvailabilities/{sid}/availableTerritories", limit=200)
+                out["sub_territories"][sa.get("productId")] = len((terrs or {}).get("data", []))
+                if not out.get("sub_state"):
+                    out["sub_state"] = sa.get("state")
+        # Available territories (for locale-skip logic)
+        try:
+            ta = self.get(f"/v2/appAvailabilities/{app_id}/territoryAvailabilities?limit=200")
+            avail_codes = []
+            for t in ta.get("data", []):
+                if t["attributes"].get("available"):
+                    import base64, json as _j
+                    decoded = _j.loads(base64.b64decode(t["id"] + "==").decode())
+                    avail_codes.append(decoded["t"])
+            out["available_territories"] = avail_codes
+            CN_ZONE = {"CHN","HKG","TWN","MAC"}
+            out["chinese_only"] = bool(avail_codes) and set(avail_codes).issubset(CN_ZONE)
+        except Exception:
+            out["available_territories"] = []
+            out["chinese_only"] = False
         return out
 
 
@@ -220,8 +249,8 @@ def audit_app(root, asc):
         len(name_asc) <= 30,
         f"App Store name too long ({len(name_asc)} chars, max 30)")
 
-    # 2.3.8 — CFBundleDisplayName matches ASC name (or its brand prefix before " - ")
-    asc_brand = re.split(r"\s+[-–—:|]\s+", name_asc, maxsplit=1)[0].strip()
+    # 2.3.8 — CFBundleDisplayName matches ASC name (or its brand prefix before " - " / ":")
+    asc_brand = re.split(r"\s*[-–—:|]\s+", name_asc, maxsplit=1)[0].strip()
     name_match = (not name_plist) or name_plist == name_asc or name_plist == asc_brand
     add("2.3.8 plist-name-matches-asc", "blocker", name_match,
         f"Info.plist CFBundleDisplayName '{name_plist}' != ASC name '{name_asc}'")
@@ -284,8 +313,10 @@ def audit_app(root, asc):
                 add("3.1.1 trial-disclosure", "blocker", discloses,
                     "free trial mentioned but post-trial price/period not clearly disclosed")
 
-            # 3.1.2(c) — auto-renewing CTA
-            has_ar = bool(re.search(r"auto-renewing|auto-renews", pc + xcs, re.I))
+            # 3.1.2(c) — auto-renewing CTA (English + Simplified + Traditional Chinese)
+            has_ar = bool(re.search(
+                r"auto-renewing|auto-renews|自动续订|自动续费|自动续期|自動續訂|自動續費|自動續期",
+                pc + xcs, re.I))
             add("3.1.2(c) auto-renewing-CTA", "blocker", has_ar,
                 "subscribe button must say 'auto-renewing'")
 
@@ -309,9 +340,15 @@ def audit_app(root, asc):
         except Exception:
             pass
 
-    # 3.1.2(c) — EULA reference in app description
-    add("3.1.2(c) eula-in-description", "blocker",
-        "eula" in desc or "terms of use" in desc or "stdeula" in desc,
+    # 3.1.2(c) — EULA / Terms link in description (broad detection)
+    eula_markers = [
+        "eula", "stdeula",
+        "terms of use", "terms of service", "terms:",
+        "服务条款", "使用条款", "用户协议", "用户条款",
+    ]
+    has_eula = any(m in desc for m in eula_markers) or \
+               bool(re.search(r"https?://[^\s]+(terms|legal|tos|eula)", desc))
+    add("3.1.2(c) eula-in-description", "blocker", has_eula,
         "EULA / Terms of Use link missing in App Store description")
 
     # 3.2.2(x) — no forced rating (precise: actual gating code, not description text)
@@ -490,6 +527,147 @@ def audit_app(root, asc):
     if sub_state and sub_state not in ("APPROVED", "WAITING_FOR_REVIEW", "IN_REVIEW", "READY_TO_SUBMIT"):
         add("CUSTOM subscription-state-ready", "blocker", False,
             f"subscription state={sub_state} (must be READY_TO_SUBMIT or higher)")
+
+    # ─── 2026-04 NEW lessons (subscription catalog & CloudKit) ────────────────
+    # CUSTOM A: per-sub availability territories (0 territories = product UNBUYABLE)
+    sub_terrs = asc.get("sub_territories") or {}
+    for pid, count in sub_terrs.items():
+        add(f"CUSTOM sub-availability-{pid}", "blocker", count > 0,
+            f"sub {pid} has {count} territories (0 = unbuyable in StoreKit)")
+        if 0 < count < 50:
+            add(f"CUSTOM sub-territories-coverage-{pid}", "high", False,
+                f"sub {pid} only in {count} territories (low market coverage)")
+
+    # CUSTOM B: each sub state must be APPROVED for buying
+    # (READY_TO_SUBMIT means never reviewed → catalog won't show product)
+    for pid, state in (asc.get("sub_states") or []):
+        if state == "READY_TO_SUBMIT":
+            add(f"CUSTOM sub-never-submitted-{pid}", "blocker", False,
+                f"sub {pid} state={state} → first-time IAP must attach to App version + Submit (web UI only)")
+
+    # CUSTOM C: subscription group localizations stuck in PREPARE_FOR_SUBMISSION
+    # → entire sub catalog unavailable, even if sub itself is APPROVED.
+    # Symptom: 'in-app-purchasables' API returns empty for the bundle.
+    stuck_locs = [(gid, loc, st) for gid, loc, st in (asc.get("sub_group_loc_states") or [])
+                  if st not in ("APPROVED", "WAITING_FOR_REVIEW", "IN_REVIEW")]
+    add("CUSTOM sub-group-loc-stuck", "blocker",
+        not stuck_locs,
+        f"{len(stuck_locs)} group localizations stuck (PREPARE_FOR_SUBMISSION) → "
+        f"sub invisible in StoreKit catalog. DELETE via API or trigger submit. "
+        f"Examples: {stuck_locs[:3]}" if stuck_locs else "")
+
+    # CUSTOM D: SubscriptionManager must listen for Transaction.updates
+    # (without it: promo codes / auto-renewal / refund / family-sharing changes
+    # are NOT propagated to the app's isPremium state)
+    sm_files = grep_dir(root, r"Product\.products|Transaction\.currentEntitlements")
+    if sm_files:
+        has_tx_updates = bool(grep_dir(root, r"Transaction\.updates"))
+        add("CUSTOM transaction-updates-listener", "high", has_tx_updates,
+            "SubscriptionManager doesn't listen to Transaction.updates → "
+            "promo codes / refunds / Family Sharing changes won't be detected")
+
+    # CUSTOM E: isPremium bypass detection
+    # Direct writes to a non-StoreKit isPremium = true field bypass the entire
+    # entitlement system. Subscription expiry/refund will not revoke access.
+    bypass_files = []
+    for p in glob.glob(f"{root}/**/*.swift", recursive=True):
+        if "/build/" in p or "Manager.swift" in p or "Demo" in p:
+            continue
+        try:
+            c = Path(p).read_text(errors="ignore")
+            if re.search(r"\.isPremium\s*=\s*true|\.isSubscribed\s*=\s*true", c):
+                if not re.search(r"isInDemoMode|--demo|DEMO_MODE", c):
+                    bypass_files.append(os.path.basename(p))
+        except Exception:
+            pass
+    add("CUSTOM is-premium-bypass", "blocker",
+        not bypass_files,
+        f"isPremium = true written directly (bypassing StoreKit) in: {bypass_files}")
+
+    # CUSTOM F: CloudKit sync — fetch existing record before save (otherwise:
+    # "record to insert already exists" CKError 11 on every sync after the first).
+    # Precise detection: scan each `func sync*/push*/upload*To*` body for
+    # `.save(` without a preceding `.record(for:` in the same function.
+    if grep_dir(root, r"CKContainer\(identifier:"):
+        ck_files = grep_dir(root, r"CKRecord\(recordType:")
+        bad = []  # list of (file, function)
+        FUNC_RE = re.compile(
+            r"func\s+(sync\w*|push\w*|upload\w*|saveTo\w*|backup\w*)\s*\([^)]*\)\s*"
+            r"(?:async\s+)?(?:throws\s+)?(?:->\s*\w+\s+)?\{",
+            re.MULTILINE)
+        for p in ck_files:
+            try:
+                c = Path(p).read_text(errors="ignore")
+                # Find each candidate function and walk balanced braces to extract body
+                for m in FUNC_RE.finditer(c):
+                    fn_name = m.group(1)
+                    start = m.end() - 1  # at the opening brace
+                    depth = 0
+                    end = start
+                    for i in range(start, len(c)):
+                        if c[i] == "{": depth += 1
+                        elif c[i] == "}":
+                            depth -= 1
+                            if depth == 0: end = i; break
+                    body = c[start:end+1]
+                    if re.search(r"\.save\(", body) and not re.search(r"\.record\(for:", body):
+                        bad.append(f"{os.path.basename(p)}::{fn_name}")
+            except Exception:
+                pass
+        add("CUSTOM cloudkit-sync-fetch-then-modify", "blocker",
+            not bad,
+            f"sync/push function calls db.save() without fetching existing record first → "
+            f"CKError 11 'already exists' on every sync after the first. Fix: "
+            f"`if let existing = try? await db.record(for: id) {{ record = existing }}`. "
+            f"Affected: {bad}" if bad else "")
+
+    # CUSTOM G: CloudKit production schema must include declared record types
+    # (cktool import-schema does NOT auto-promote dev → prod; production schema
+    # must be deployed via CloudKit Dashboard for app users to write records.)
+    ck_record_types = set()
+    for p in grep_dir(root, r'rootRecordType\s*=\s*"|recordType\s*=\s*"'):
+        try:
+            c = Path(p).read_text(errors="ignore")
+            for m in re.finditer(r'(?:rootRecordType|recordType)\s*=\s*"([A-Za-z0-9_]+)"', c):
+                ck_record_types.add(m.group(1))
+        except Exception:
+            pass
+    if ck_record_types:
+        add("CUSTOM cloudkit-prod-schema-deploy", "high",
+            False,  # Always warn; verify manually with cktool export-schema --environment PRODUCTION
+            f"Verify CloudKit PRODUCTION schema has record types: {sorted(ck_record_types)}. "
+            f"Run: xcrun cktool export-schema --container-id <id> --environment PRODUCTION")
+
+    # CUSTOM H: Paywall benefit strings must have code implementation
+    # (extends earlier "Play along/Identify" checks to common subscription claims)
+    paywall_path = next((p for p in [find_one(root, "PaywallView.swift"),
+                                      find_one(root, "SubscriptionView.swift")]
+                         if p), None)
+    if paywall_path:
+        try:
+            pc = Path(paywall_path).read_text(errors="ignore").lower()
+            BENEFIT_CHECKS = {
+                "icloud": (r"CKContainer|NSUbiquitousKeyValueStore|privateCloudDatabase",
+                           "iCloud sync claimed but no CKContainer/CloudKit code"),
+                "csv": (r"\\.csv|csvData|CSVWriter",
+                        "CSV export claimed but no CSV writing code"),
+                "导出csv": (r"\\.csv|csvData",
+                            "CSV export claimed but no CSV writing code"),
+                "无限": (r"freeLimit|>= freeLimit|isPremium\s*\\|\\|",
+                          "'unlimited' claimed but no free-limit gating code (or always-allow logic)"),
+                "unlimited": (r"freeLimit|>= freeLimit|isPremium\s*\\|\\|",
+                              "'unlimited' claimed but no free-limit gating code"),
+                "提醒": (r"UNUserNotificationCenter|UNNotificationRequest",
+                         "reminder claimed but no UNUserNotificationCenter code"),
+                "notification": (r"UNUserNotificationCenter|UNNotificationRequest",
+                                 "notification claimed but no UNUserNotificationCenter code"),
+            }
+            for keyword, (pattern, msg) in BENEFIT_CHECKS.items():
+                if keyword in pc:
+                    has_impl = bool(grep_dir(root, pattern))
+                    add(f"CUSTOM paywall-benefit-{keyword}", "high", has_impl, msg)
+        except Exception:
+            pass
 
     # All locales must have supportUrl
     missing = asc.get("locales_missing_support") or []

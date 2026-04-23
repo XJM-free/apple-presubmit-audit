@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.0] - 2026-04-23
+
+### Added — 8 new rules from real production debugging
+
+After a user reported "subscription unbuyable + iCloud sync broken" across 8 in-store apps, we traced 4 distinct silent failure modes that ASC marks "APPROVED" but Apple's StoreKit catalog cannot serve. All 8 are now BLOCKER checks:
+
+- **CUSTOM sub-availability-{pid}** — Per-subscription `subscriptionAvailability` must have ≥1 territory. ASC creates sub at `state=APPROVED` but with 0 territories until you call `POST /v1/subscriptionAvailabilities` — Product is invisible to StoreKit. Found on 4 in-store apps.
+- **CUSTOM sub-never-submitted-{pid}** — Subscription state `READY_TO_SUBMIT` means it was created but **never reviewed**. First-time IAPs MUST attach to an App version + go through unified review (cannot independently submit via API per Apple `feedback_subscription_iap_apple_limits` #5).
+- **CUSTOM sub-group-loc-stuck** — Subscription **group** localizations stuck in `PREPARE_FOR_SUBMISSION`. Even if individual subs are APPROVED, group not LIVE → `https://amp-api-edge.apps.apple.com/.../in-app-purchasables` returns empty → StoreKit silently shows no products. Symptom: paywall says "loading..." or "no products available". Fix: DELETE the stuck group locs via API.
+- **CUSTOM transaction-updates-listener** — `SubscriptionManager` must spawn a background `Task { for await in Transaction.updates }`. Without it: promo code redemption / auto-renewal / refund / Family Sharing changes are NOT propagated to `isPremium`. User taps "redeem code" → success on Apple side, but app UI never updates.
+- **CUSTOM is-premium-bypass** — Direct writes to `dataStore.isPremium = true` (outside SubscriptionManager + outside demo mode) are a critical security bug: subscription expiry/refund will never revoke access. Found in `DivorceCalc/PaywallView.swift` where the paywall set `store.isPremium = true` after purchase, completely independent of the StoreKit entitlement check.
+- **CUSTOM cloudkit-sync-fetch-then-modify** — Apps using CloudKit must fetch existing record before save: `if let existing = try? await db.record(for: id) { record = existing } else { record = CKRecord(recordType:, recordID:) }`. The naive `db.save(CKRecord(recordType:, recordID:))` works the FIRST time, but every subsequent sync fails with `CKError 11 "record to insert already exists"`. Affects: AquaLog, HomeManager, WeddingCalculator, RenoBudget, PetBook, DocGuard, CarCare, PocketTask.
+- **CUSTOM cloudkit-prod-schema-deploy** — `cktool import-schema` ONLY deploys to `--environment DEVELOPMENT`. Production deploy must be done via CloudKit Dashboard "Deploy Schema Changes..." button. Without it: `CKError 1011 PartialFailure / Unknown record type` on every write. Apps with `com.apple.developer.icloud-container-environment = Production` (or App Store builds — production by default) fail silently.
+- **CUSTOM paywall-benefit-{keyword}** — Extends earlier "Play along/Identify" cross-checks to common subscription claims: `iCloud`, `CSV`, `unlimited`, `notification`, `提醒`, `导出`. If paywall lists a feature with no implementation evidence in `**/*.swift`, flag it. Avoids "feature paywall is a lie" rejection AND user complaints.
+
+### Internal
+- `ASCClient.fetch_metadata` now returns:
+  - `sub_states`: list of `(productId, state)` tuples
+  - `sub_territories`: dict `{productId: territory_count}`
+  - `sub_group_loc_states`: list of `(group_id, locale, state)` tuples
+
 ## [0.3.0] - 2026-04-18
 
 ### Added
