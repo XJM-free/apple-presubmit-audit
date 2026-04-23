@@ -919,7 +919,7 @@ def json_report(all_results):
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 def main():
-    p = argparse.ArgumentParser(description="Apple App Store pre-submit audit (40+ rules)")
+    p = argparse.ArgumentParser(description="Apple App Store pre-submit audit (70+ rules)")
     p.add_argument("--project", help="Path to Xcode project root")
     p.add_argument("--bundle-id", help="Bundle identifier (for ASC lookup)")
     p.add_argument("--config", help="JSON file with multiple apps to audit")

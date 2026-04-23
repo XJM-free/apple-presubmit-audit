@@ -30,7 +30,7 @@ If you're an indie shipping carefully, this saves you days. If you're trying to 
 - Doesn't bypass any guideline (every rule here is a guideline restated mechanically)
 - Doesn't replace careful design, testing, or honest description writing
 
-## What it checks (40+ rules across 5 categories + custom)
+## What it checks (70+ rules across 5 categories + custom)
 
 | Category | Sample checks |
 |---|---|
