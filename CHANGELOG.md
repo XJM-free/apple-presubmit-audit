@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1] - 2026-04-23
+
+### Fixed (false positives discovered during ground-truth verification of v0.4.0)
+
+- **paywall-benefit-icloud_sync**: previously triggered when paywall file contained the substring `icloud` anywhere — including SF Symbol names like `icloud.fill`, `icloud.and.arrow.down`. Apps using only an iCloud icon (e.g. ShipReady's "Live App Store Connect metadata fetch" with `icloud.and.arrow.down` icon) were falsely flagged. Now: strips `systemName: "..."` and `icon: "..."` strings from the paywall file before keyword search, AND requires both `icloud` AND a sync-intent token (`sync` / `backup` / `同步` / `备份` / `across devices`) to fire. Real claims like "iCloud 同步" or "Data backup" still flag.
+- **paywall-benefit-csv_export**: previously matched only `\.csv` literal — missed apps that have real CSV export functions (`exportCSV()`, `var csv = "header\n"`, `csvFileURL`, `csvEscaped`). Reduced 10 findings to 2 real cases (CarCare and ClosetManager whose paywalls mention CSV but have zero CSV code anywhere).
+- **L10n resolution**: paywall benefit keyword search now also reads any `L10n.swift` and `*.xcstrings` in the project, so `BenefitRow(text: L10n.feature5)` resolves to `"iCloud 同步"` for the keyword check, not just `"feature5"`.
+
 ## [0.4.0] - 2026-04-23
 
 ### Added — 8 new rules from real production debugging

@@ -645,27 +645,76 @@ def audit_app(root, asc):
                          if p), None)
     if paywall_path:
         try:
-            pc = Path(paywall_path).read_text(errors="ignore").lower()
+            pc_raw = Path(paywall_path).read_text(errors="ignore")
+            # Strip SF Symbol names — they look like "icloud.fill" but aren't real
+            # claims. Lines like `Image(systemName: "icloud.and.arrow.down")` or
+            # `BenefitRow(icon: "icloud.fill", ...)` should not trigger a "claim"
+            # — only the user-facing text label does.
+            pc_no_icons = re.sub(
+                r'(?:systemName|icon)\s*:\s*"[^"]*"', '', pc_raw)
+            pc = pc_no_icons.lower()
+
+            # Resolve L10n constants to actual strings (best-effort): pull strings
+            # from any L10n.swift in the project so we can see what `L10n.feature5`
+            # actually displays.
+            l10n_text = ""
+            for l10n in glob.glob(f"{root}/**/L10n.swift", recursive=True):
+                try:
+                    l10n_text += Path(l10n).read_text(errors="ignore") + "\n"
+                except Exception:
+                    pass
+            for x in glob.glob(f"{root}/**/*.xcstrings", recursive=True):
+                try:
+                    l10n_text += Path(x).read_text(errors="ignore") + "\n"
+                except Exception:
+                    pass
+            # If paywall references L10n.foo, append L10n's full body so foo's
+            # localized text is reachable to the keyword search.
+            if re.search(r"L10n\.\w+", pc_raw):
+                pc += "\n" + l10n_text.lower()
+
             BENEFIT_CHECKS = {
-                "icloud": (r"CKContainer|NSUbiquitousKeyValueStore|privateCloudDatabase",
-                           "iCloud sync claimed but no CKContainer/CloudKit code"),
-                "csv": (r"\\.csv|csvData|CSVWriter",
-                        "CSV export claimed but no CSV writing code"),
-                "导出csv": (r"\\.csv|csvData",
-                            "CSV export claimed but no CSV writing code"),
-                "无限": (r"freeLimit|>= freeLimit|isPremium\s*\\|\\|",
-                          "'unlimited' claimed but no free-limit gating code (or always-allow logic)"),
-                "unlimited": (r"freeLimit|>= freeLimit|isPremium\s*\\|\\|",
-                              "'unlimited' claimed but no free-limit gating code"),
-                "提醒": (r"UNUserNotificationCenter|UNNotificationRequest",
-                         "reminder claimed but no UNUserNotificationCenter code"),
-                "notification": (r"UNUserNotificationCenter|UNNotificationRequest",
-                                 "notification claimed but no UNUserNotificationCenter code"),
+                # icloud — both English/Chinese. Also requires a sync-intent word
+                # nearby ('sync','backup','同步','备份','iCloud') — bare 'icloud'
+                # in non-feature text shouldn't trigger. Heuristic: paywall must
+                # have BOTH 'icloud' AND a sync intent token.
+                "icloud_sync": (
+                    lambda txt: "icloud" in txt and any(
+                        w in txt for w in ("sync", "backup", "同步", "备份", "across devices")
+                    ),
+                    r"CKContainer|NSUbiquitousKeyValueStore|privateCloudDatabase",
+                    "iCloud sync/backup claimed but no CKContainer/Ubiquity code",
+                ),
+                # csv — paywall mentions CSV export
+                "csv_export": (
+                    lambda txt: "csv" in txt or "导出csv" in txt,
+                    # Match real CSV code: function names, file refs, string
+                    # construction with header row, and CSVWriter classes.
+                    r"func\s+\w*[Cc]sv\w*|var\s+csv\s*[:=]|\.csv\"|csvFileURL|"
+                    r"csvEscaped|csvData|CSVWriter|writeCSV|generateCSV|"
+                    r"exportCSV|\"\.csv\"|\"csv\"",
+                    "CSV export claimed but no CSV writing code (looked for "
+                    "exportCSV function, csv variables, .csv file refs, CSVWriter)",
+                ),
+                # unlimited — must have a free-limit gate
+                "unlimited_gate": (
+                    lambda txt: any(w in txt for w in ("unlimited", "无限",
+                        "no limit", "无限制")),
+                    r"freeLimit|free_limit|FreeLimit|isPremium\s*\\|\\||isPremium \\|\\|",
+                    "'unlimited' claimed but no free-limit gating code found",
+                ),
+                # notifications/reminders
+                "notification": (
+                    lambda txt: any(w in txt for w in ("提醒", "notification",
+                        "reminder", "alerts", "alert when")),
+                    r"UNUserNotificationCenter|UNNotificationRequest|UNTimeIntervalNotificationTrigger",
+                    "notification/reminder claimed but no UNUserNotificationCenter code",
+                ),
             }
-            for keyword, (pattern, msg) in BENEFIT_CHECKS.items():
-                if keyword in pc:
-                    has_impl = bool(grep_dir(root, pattern))
-                    add(f"CUSTOM paywall-benefit-{keyword}", "high", has_impl, msg)
+            for rule_name, (matches, code_pat, msg) in BENEFIT_CHECKS.items():
+                if matches(pc):
+                    has_impl = bool(grep_dir(root, code_pat))
+                    add(f"CUSTOM paywall-benefit-{rule_name}", "high", has_impl, msg)
         except Exception:
             pass
 
