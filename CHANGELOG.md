@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.2] - 2026-04-24
+
+### Added — `release-notes-asc-compatible` (1 new rule)
+
+- **CUSTOM `release-notes-asc-compatible`** — scans `fastlane/metadata/*/release_notes.txt`,
+  `metadata/*/release_notes.txt`, and the topmost block of `CHANGELOG.md` for
+  characters that ASC `whatsNew` field rejects.
+
+  **Detected violations**:
+  - **Any emoji** (✅ ⚠️ 🎉 🔧 💡 🚀 etc.) — triggers `409 INVALID_CHARACTERS`
+    on PATCH `/v1/appStoreVersionLocalizations`
+  - **Length >4000 chars** — silently truncates / rejects
+
+  **Why this exists**: real failure during a v1.0.10 submission. Release notes
+  contained `✅ 已同步到 iCloud` — ASC API returned `409` with detail
+  `"can't contain the following character(s): ✅."`. Wasted 4 round-trips
+  (withdraw → patch fail → resubmit → withdraw → patch fail → bisect → fix).
+
+  **Fix**: use plain text + Chinese punctuation `「」 ，。：；！？`. Apple's
+  changelog field is text-only, no emoji even though they render fine in display.
+
 ## [0.5.1] - 2026-04-24
 
 ### Added — `empty-state-vs-error-state` (1 new rule, 7 framework variants)

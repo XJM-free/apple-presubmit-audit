@@ -935,6 +935,48 @@ def audit_app(root, asc):
         f"`catch let e as CKError where e.code == .unknownItem`. "
         f"Files: {bad_empty_catches[:5]}")
 
+    # CUSTOM N: Release notes text must be ASC-compatible.
+    # Failures observed in production:
+    #   - Any emoji (✅ ⚠️ 🎉 🔧 💡 etc.) → ASC 409 INVALID_CHARACTERS
+    #   - whatsNew >4000 chars → ASC silently truncates / rejects
+    # We scan common release-notes file locations: fastlane/metadata/<locale>/release_notes.txt,
+    # CHANGELOG.md (latest version block), and any *.txt under metadata/.
+    EMOJI_RE = re.compile(
+        r'[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F000-\U0001F02F'
+        r'\U0001F0A0-\U0001F0FF\U0001F100-\U0001F64F\U0001F680-\U0001F6FF'
+        r'\U0001F700-\U0001F77F\U00002700-\U000027BF\U0001F900-\U0001F9FF]|'
+        r'[✅⚠️ℹ️🎉🔧💡🚀⭐️📱💻🍎🐛🆕🔥]'
+    )
+    notes_files: list[str] = []
+    for pat in ['fastlane/metadata/*/release_notes.txt',
+                'fastlane/metadata/**/release_notes.txt',
+                'CHANGELOG.md',
+                'metadata/*/release_notes.txt']:
+        notes_files += glob.glob(f"{root}/{pat}", recursive=True)
+    bad_notes: list[str] = []
+    for nf in notes_files:
+        try:
+            text = Path(nf).read_text(errors="ignore")
+            # CHANGELOG: only check the topmost (newest) version block
+            if nf.endswith("CHANGELOG.md"):
+                blocks = re.split(r'^##\s+', text, flags=re.MULTILINE)
+                if len(blocks) >= 2:
+                    text = blocks[1]
+                else:
+                    continue
+            emojis = EMOJI_RE.findall(text)
+            if emojis:
+                bad_notes.append(f"{os.path.basename(os.path.dirname(nf))}/{os.path.basename(nf)}: {set(emojis)}")
+            if len(text) > 4000:
+                bad_notes.append(f"{os.path.basename(nf)}: {len(text)} chars > 4000")
+        except Exception:
+            pass
+    add("CUSTOM release-notes-asc-compatible", "high",
+        not bad_notes,
+        f"Release notes contain characters Apple ASC rejects (`409 INVALID_CHARACTERS`). "
+        f"Common offender: emoji (✅ ⚠️ 🎉). Use plain text + CN punctuation 「」，。 "
+        f"Affected: {bad_notes[:5]}")
+
     return results
 
 
