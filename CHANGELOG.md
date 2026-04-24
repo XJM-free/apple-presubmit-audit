@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.5.1] - 2026-04-24
+
+### Added — 1 new rule from real production failure
+
+- **CUSTOM `cloudkit-empty-state-handled`** — flags any Swift file using
+  `CKContainer` / `CKDatabase` / `CKRecord` that catches errors with
+  `errorMessage = error.localizedDescription` but does NOT branch on
+  `CKError.unknownItem` / `"Record not found"`.
+
+  **Why this rule exists**: AquaLog v1.0.8 shipped with `pullData()` that
+  surfaced raw `CKError ... Record not found` to users who pressed
+  "Restore from iCloud" before ever backing up. Apple Review didn't catch
+  (UX bug, not crash). 10 QA agents didn't catch (all ran happy path).
+  Existing static audit didn't catch (no grep pattern for catch-block
+  empty-state semantics). This rule plugs that exact gap.
+
+  Fix the warning by adding a friendly empty-state branch:
+  ```swift
+  } catch let ckErr as CKError where ckErr.code == .unknownItem {
+      cloudStatusDescription = "iCloud 中暂无备份。请先点「立即同步到 iCloud」。"
+  } catch { errorMessage = error.localizedDescription }
+  ```
+
 ## [0.5.0] - 2026-04-23
 
 ### Added — 24 lessons from a multi-app audit-and-fix cycle

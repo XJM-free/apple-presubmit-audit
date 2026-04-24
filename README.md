@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
-![Rules: 70+](https://img.shields.io/badge/rules-70+-success)
+![Rules: 71+](https://img.shields.io/badge/rules-71+-success)
 ![Lessons: 50+ rejections](https://img.shields.io/badge/distilled%20from-50%2B%20real%20rejections-orange)
 
 > **70+ static checks codifying ~50 real Apple App Store rejections** across one indie developer's submission history.

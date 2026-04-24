@@ -878,6 +878,37 @@ def audit_app(root, asc):
         except Exception:
             pass
 
+    # CUSTOM M: CloudKit empty-state vs error-state confusion.
+    # Real bug from AquaLog v1.0.8: pullData() catch block surfaced raw
+    # CKError("Record not found") to user when restoring without prior backup.
+    # Apple Review won't catch (UX, not crash). QA usually tests happy path.
+    # Pattern: file uses CKContainer/CKDatabase + has a generic
+    # `errorMessage = error.localizedDescription` catch but no CKError(.unknownItem)
+    # or "not found"/"unknownItem" branch. → flag for empty-state review.
+    cloudkit_files = grep_dir(root, r"CKContainer|CKDatabase|CKRecord")
+    bad_cloudkit_catches = []
+    for p in cloudkit_files:
+        try:
+            c = Path(p).read_text(errors="ignore")
+            # Heuristic: file has CloudKit + has a catch swallowing error to UI
+            has_generic_catch = re.search(
+                r'catch[^{]*\{[^}]*errorMessage\s*=\s*error\.localizedDescription',
+                c, re.DOTALL)
+            handles_empty = re.search(
+                r'CKError\s*\.\s*unknownItem|\.code\s*==\s*\.unknownItem|'
+                r'"Record not found"|"not found"|unknownItem',
+                c)
+            if has_generic_catch and not handles_empty:
+                bad_cloudkit_catches.append(os.path.basename(p))
+        except Exception:
+            pass
+    add("CUSTOM cloudkit-empty-state-handled", "high",
+        not bad_cloudkit_catches,
+        f"CloudKit fetch errors fall through generic catch → user sees raw "
+        f"'Record not found'. Add `catch let e as CKError where e.code == "
+        f".unknownItem` branch with friendly empty-state message: "
+        f"{bad_cloudkit_catches[:3]}")
+
     return results
 
 
