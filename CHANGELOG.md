@@ -2,26 +2,33 @@
 
 ## [0.5.1] - 2026-04-24
 
-### Added — 1 new rule from real production failure
+### Added — `empty-state-vs-error-state` (1 new rule, 7 framework variants)
 
-- **CUSTOM `cloudkit-empty-state-handled`** — flags any Swift file using
-  `CKContainer` / `CKDatabase` / `CKRecord` that catches errors with
-  `errorMessage = error.localizedDescription` but does NOT branch on
-  `CKError.unknownItem` / `"Record not found"`.
+- **CUSTOM `empty-state-vs-error-state`** — flags any Swift file that fetches
+  from an external source (CloudKit / HealthKit / PhotoLibrary / EventKit /
+  Network / FileSystem / Core Data) and surfaces ANY error verbatim to a
+  UI-bound string via `errorMessage = error.localizedDescription`, without
+  a branch handling the legitimate "no data yet" empty case.
 
-  **Why this rule exists**: AquaLog v1.0.8 shipped with `pullData()` that
-  surfaced raw `CKError ... Record not found` to users who pressed
-  "Restore from iCloud" before ever backing up. Apple Review didn't catch
-  (UX bug, not crash). 10 QA agents didn't catch (all ran happy path).
-  Existing static audit didn't catch (no grep pattern for catch-block
-  empty-state semantics). This rule plugs that exact gap.
+  **Why this rule exists**: a recurring class of UX bug invisible to:
+  - Apple Review (UX is not a reject criterion, only crashes are)
+  - Static linters (no runtime semantics)
+  - Happy-path QA (testers usually have data)
 
-  Fix the warning by adding a friendly empty-state branch:
+  Result: real users see raw codes like `CKError ... Record not found`,
+  `HKError no data available`, `URLError 404` instead of friendly empty-state
+  copy. Catching it pre-submit is the only place this gets caught early.
+
+  Fix: add a typed catch for the "not found / empty / denied" case before
+  the generic catch:
   ```swift
   } catch let ckErr as CKError where ckErr.code == .unknownItem {
-      cloudStatusDescription = "iCloud 中暂无备份。请先点「立即同步到 iCloud」。"
+      message = "No backup yet — sync first to create one."
   } catch { errorMessage = error.localizedDescription }
   ```
+
+  Same pattern works for `HKError`, `PHAuthorizationStatus`, `URLError`,
+  filesystem `fileDoesNotExist`, Core Data empty `fetchedObjects`, etc.
 
 ## [0.5.0] - 2026-04-23
 

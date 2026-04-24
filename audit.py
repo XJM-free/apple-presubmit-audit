@@ -878,36 +878,62 @@ def audit_app(root, asc):
         except Exception:
             pass
 
-    # CUSTOM M: CloudKit empty-state vs error-state confusion.
-    # Real bug from AquaLog v1.0.8: pullData() catch block surfaced raw
-    # CKError("Record not found") to user when restoring without prior backup.
-    # Apple Review won't catch (UX, not crash). QA usually tests happy path.
-    # Pattern: file uses CKContainer/CKDatabase + has a generic
-    # `errorMessage = error.localizedDescription` catch but no CKError(.unknownItem)
-    # or "not found"/"unknownItem" branch. → flag for empty-state review.
-    cloudkit_files = grep_dir(root, r"CKContainer|CKDatabase|CKRecord")
-    bad_cloudkit_catches = []
-    for p in cloudkit_files:
-        try:
-            c = Path(p).read_text(errors="ignore")
-            # Heuristic: file has CloudKit + has a catch swallowing error to UI
-            has_generic_catch = re.search(
-                r'catch[^{]*\{[^}]*errorMessage\s*=\s*error\.localizedDescription',
-                c, re.DOTALL)
-            handles_empty = re.search(
-                r'CKError\s*\.\s*unknownItem|\.code\s*==\s*\.unknownItem|'
-                r'"Record not found"|"not found"|unknownItem',
-                c)
-            if has_generic_catch and not handles_empty:
-                bad_cloudkit_catches.append(os.path.basename(p))
-        except Exception:
-            pass
-    add("CUSTOM cloudkit-empty-state-handled", "high",
-        not bad_cloudkit_catches,
-        f"CloudKit fetch errors fall through generic catch → user sees raw "
-        f"'Record not found'. Add `catch let e as CKError where e.code == "
-        f".unknownItem` branch with friendly empty-state message: "
-        f"{bad_cloudkit_catches[:3]}")
+    # CUSTOM M: Empty-state vs error-state confusion in user-facing catch blocks.
+    #
+    # Bug pattern: a file fetches from an external source (CloudKit, HealthKit,
+    # PhotoLibrary, network, filesystem, Core Data) and surfaces ANY error verbatim
+    # to a UI-bound string via `errorMessage = error.localizedDescription`. This
+    # treats the legitimate "no data yet" empty state as if it were an error,
+    # showing users raw codes like `CKError ... Record not found`,
+    # `HKError no data available`, `URLError(404)`, etc.
+    #
+    # This pattern is invisible to:
+    #   - Apple Review (UX is not a reject criterion, only crashes are)
+    #   - Static linters (no runtime semantics)
+    #   - Happy-path QA (testers usually have data)
+    # → Catching it pre-submit is the only place this gets caught early.
+    #
+    # Heuristic: file imports/uses one of the empty-prone APIs AND has a generic
+    # `errorMessage = error.localizedDescription` catch with no branch matching
+    # known "empty / not-found" tokens.
+    EMPTY_PRONE_APIS = {
+        "CloudKit": (r"CKContainer|CKDatabase|CKRecord|import CloudKit",
+                     r"CKError\s*\.\s*unknownItem|\.code\s*==\s*\.unknownItem|"
+                     r"\"Record not found\"|unknownItem|notFound"),
+        "HealthKit": (r"HKHealthStore|HKQuery|import HealthKit",
+                      r"HKError|noData|notDetermined|denied"),
+        "PhotoLibrary": (r"PHPhotoLibrary|PHAsset|import Photos",
+                         r"PHAuthorizationStatus|denied|restricted|isEmpty"),
+        "EventKit": (r"EKEventStore|EKReminder|import EventKit",
+                     r"EKAuthorizationStatus|denied|isEmpty|noData|notFound"),
+        "Network": (r"URLSession|URLRequest|URLError",
+                    r"statusCode\s*==\s*404|\.notFound|notConnectedToInternet|"
+                    r"isEmpty|httpResponse"),
+        "FileSystem": (r"FileManager\.default|fileExists|contentsOfDirectory",
+                       r"fileDoesNotExist|fileExists|noSuchFile|isEmpty"),
+        "CoreData": (r"NSFetchRequest|NSManagedObject|persistentContainer",
+                     r"isEmpty|count\s*==\s*0|fetchedObjects"),
+    }
+    bad_empty_catches: list[tuple[str, str]] = []
+    for api_name, (api_re, empty_re) in EMPTY_PRONE_APIS.items():
+        for p in grep_dir(root, api_re):
+            try:
+                c = Path(p).read_text(errors="ignore")
+                has_generic_catch = re.search(
+                    r'catch[^{]*\{[^}]*errorMessage\s*=\s*error\.localizedDescription',
+                    c, re.DOTALL)
+                handles_empty = re.search(empty_re, c)
+                if has_generic_catch and not handles_empty:
+                    bad_empty_catches.append((api_name, os.path.basename(p)))
+            except Exception:
+                pass
+    add("CUSTOM empty-state-vs-error-state", "high",
+        not bad_empty_catches,
+        f"Files fetching from external sources surface raw error.localizedDescription "
+        f"to UI without a 'no-data / not-found' branch. Users see raw codes when the "
+        f"correct UX is an empty-state message. Add a typed catch like "
+        f"`catch let e as CKError where e.code == .unknownItem`. "
+        f"Files: {bad_empty_catches[:5]}")
 
     return results
 
