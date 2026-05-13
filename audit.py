@@ -815,7 +815,7 @@ def audit_app(root, asc):
                         and any(w in txt for w in ("detail", "progress", "trend", "stats",
                             "详细", "进度", "趋势", "统计")),
                     r"import Charts|BarMark|LineMark|PointMark|SectorMark|RuleMark|"
-                    r"StatsView|statsGrid|splitSection|RingChart|PieSlice|"
+                    r"StatsView|HistoryView|statsGrid|splitSection|RingChart|PieSlice|"
                     r"completionRate|GeometryReader|Path\s*\(|Canvas\s*\(",
                     "Detailed charts/trends claimed but no Swift Charts code",
                 ),
