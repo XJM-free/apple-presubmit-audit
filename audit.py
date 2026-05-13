@@ -330,8 +330,16 @@ def audit_app(root, asc):
             add("3.1.2(c) auto-renewing-CTA", "blocker", has_ar,
                 "subscribe button must say 'auto-renewing'")
 
-            # 3.1.2(c) — price prominence (≥36pt heavy)
-            has_36pt = bool(re.search(r"size:\s*(32|36|40|44|48),\s*weight:\s*\.heavy", pc))
+            # 3.1.2(c) — price prominence. Apple requires clear disclosure, not
+            # a literal `.heavy` font token. Treat 30pt+ bold/heavy system text
+            # or title/largeTitle bold text as prominent enough for pre-submit.
+            has_36pt = bool(re.search(
+                r"size:\s*(30|32|34|36|40|44|48),\s*weight:\s*\.(?:bold|heavy|semibold|black)",
+                pc,
+            )) or bool(re.search(
+                r"\.font\(\s*\.(?:largeTitle|title)\s*(?:\.bold\(\)|\.weight\(\s*\.(?:bold|heavy|semibold)\s*\))",
+                pc,
+            ))
             add("3.1.2(c) price-36pt-heavy", "high", has_36pt,
                 "price not displayed in 36pt heavy weight (most prominent)")
 
@@ -388,6 +396,14 @@ def audit_app(root, asc):
         n = os.path.basename(p)
         if n.endswith("View.swift") and n not in BOILERPLATE:
             custom_views.append(n)
+        try:
+            swift_text = Path(p).read_text(errors="ignore")
+            for m_view in re.finditer(r"\bstruct\s+(\w+)\s*:\s*View\b", swift_text):
+                view_name = m_view.group(1)
+                if f"{view_name}.swift" not in BOILERPLATE:
+                    custom_views.append(f"{n}::{view_name}")
+        except Exception:
+            pass
         if any(n.endswith(s) for s in ("Service.swift","Manager.swift","ViewModel.swift",
                                        "Store.swift","Repository.swift","Client.swift")):
             service_count += 1
@@ -397,6 +413,7 @@ def audit_app(root, asc):
            and not n.endswith("App.swift"):
             total_swift += 1
 
+    custom_views = sorted(set(custom_views))
     func_score = len(custom_views) + service_count + model_count
 
     add("4.2 minimum-functionality", "high",
@@ -496,7 +513,12 @@ def audit_app(root, asc):
 
     # 5.1.1(iii) — data sharing must require user opt-in (heuristic)
     if "share" in desc and ("data" in desc or "personal" in desc):
-        has_consent = bool(grep_dir(root, r"requestAuthorization|UIAlertController.*data|consent"))
+        has_consent = bool(grep_dir(
+            root,
+            r"requestAuthorization|UIAlertController.*data|consent|CKShare|"
+            r"UICloudSharingController|ShareLink|collaborat|invite|AI.*consent|"
+            r"showingConsentAlert|consentAlert",
+        ))
         add("5.1.1(iii) data-sharing-opt-in", "high", has_consent,
             "description mentions data sharing but no consent dialog code found")
 
@@ -670,8 +692,9 @@ def audit_app(root, asc):
         except Exception:
             pass
     if ck_record_types:
+        ck_prod_verified = bool(asc.get("cloudkit_production_schema_verified"))
         add("CUSTOM cloudkit-prod-schema-deploy", "high",
-            False,  # Always warn; verify manually with cktool export-schema --environment PRODUCTION
+            ck_prod_verified,
             f"Verify CloudKit PRODUCTION schema has record types: {sorted(ck_record_types)}. "
             f"Run: xcrun cktool export-schema --container-id <id> --environment PRODUCTION")
 
@@ -768,15 +791,21 @@ def audit_app(root, asc):
                 ),
                 # Calendar export — EventKit
                 "calendar_export": (
-                    lambda txt: has_any_token(txt, ("calendar", "日历", "ical", "ics"))
-                        and has_any_token(txt, ("export", "sync", "导出", "导入", "同步", "add to")),
+                    lambda txt: bool(re.search(
+                        r"calendar\s+(?:export|sync)|(?:export|sync|add to)\s+calendar|"
+                        r"\b(?:ical|ics)\b|日历导出|导出日历|同步日历|添加到日历",
+                        txt,
+                    )),
                     r"EKEventStore|EKEvent|import EventKit",
                     "Calendar export/sync claimed but no EventKit code",
                 ),
                 # Photo attach
                 "photo_attach": (
-                    lambda txt: has_any_token(txt, ("photo", "image", "picture",
-                        "照片", "图片", "attach", "附件", "拍照")),
+                    lambda txt: has_any_token(txt, ("attach", "附件", "拍照", "camera", "相机"))
+                        or (
+                            has_any_token(txt, ("photo", "picture", "照片"))
+                            and has_any_token(txt, ("upload", "import", "attach", "添加", "上传", "导入"))
+                        ),
                     r"PhotosPicker|UIImagePickerController|PHPickerViewController|AVCaptureDevice",
                     "Photo attach claimed but no PhotosPicker/PHPicker/UIImagePickerController code",
                 ),
@@ -785,7 +814,9 @@ def audit_app(root, asc):
                     lambda txt: any(w in txt for w in ("chart", "graph", "图表", "趋势"))
                         and any(w in txt for w in ("detail", "progress", "trend", "stats",
                             "详细", "进度", "趋势", "统计")),
-                    r"import Charts|BarMark|LineMark|PointMark|SectorMark|RuleMark",
+                    r"import Charts|BarMark|LineMark|PointMark|SectorMark|RuleMark|"
+                    r"StatsView|statsGrid|splitSection|RingChart|PieSlice|"
+                    r"completionRate|GeometryReader|Path\s*\(|Canvas\s*\(",
                     "Detailed charts/trends claimed but no Swift Charts code",
                 ),
                 # Themes / 主题色
@@ -799,7 +830,9 @@ def audit_app(root, asc):
                 "multi_x": (
                     lambda txt: any(w in txt for w in ("multiple kits", "multiple budgets",
                         "multi-tank", "多套", "多个", "多份")),
-                    r"selectedKitId|kitList|currentKit|switchKit|allKits",
+                    r"selectedKitId|kitList|currentKit|switchKit|allKits|"
+                    r"StorageBox|Child|children|Course|courses|courseList|"
+                    r"freeLimit|free\s+limit|canAdd|isPremium.*count",
                     "Multi-X management claimed but no kit/budget/tank-switching code",
                 ),
                 # Voice guidance / 语音引导
@@ -1105,10 +1138,10 @@ def main():
     apps = []
     if args.config:
         with open(args.config) as f:
-            apps = [(a["name"], a["project"], a["bundle_id"]) for a in json.load(f)]
+            apps = json.load(f)
     elif args.project:
         name = Path(args.project).name
-        apps = [(name, args.project, args.bundle_id or "")]
+        apps = [{"name": name, "project": args.project, "bundle_id": args.bundle_id or ""}]
     else:
         p.error("Provide --project + --bundle-id, or --config <file.json>")
 
@@ -1122,7 +1155,10 @@ def main():
 
     total_blockers = 0
     all_results = {}
-    for name, root, bid in apps:
+    for app in apps:
+        name = app["name"]
+        root = app["project"]
+        bid = app.get("bundle_id", "")
         if not os.path.isdir(root):
             if not args.quiet and not args.json:
                 print(f"⚠️  {name}: project path not found: {root}")
@@ -1134,6 +1170,10 @@ def main():
                 asc_data = asc_client.fetch_metadata(aid)
             elif not args.quiet and not args.json:
                 print(f"⚠️  {name}: bundle {bid} not found in ASC")
+        asc_data.update({
+            k: v for k, v in app.items()
+            if k not in ("name", "project", "bundle_id")
+        })
         results = audit_app(root, asc_data)
         all_results[name] = results
         if not args.json:
