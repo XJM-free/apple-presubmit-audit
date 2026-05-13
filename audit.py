@@ -56,12 +56,21 @@ class ASCClient:
         )
 
     def get(self, path, **params):
-        r = self.s.get(
-            f"https://api.appstoreconnect.apple.com{path}",
-            headers={"Authorization": f"Bearer {self._token()}"},
-            params=params,
-        )
-        return r.json() if r.ok else {}
+        last_exc = None
+        for attempt in range(3):
+            try:
+                r = self.s.get(
+                    f"https://api.appstoreconnect.apple.com{path}",
+                    headers={"Authorization": f"Bearer {self._token()}"},
+                    params=params,
+                    timeout=60,
+                )
+                return r.json() if r.ok else {}
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt < 2:
+                    time.sleep(1.5 * (attempt + 1))
+        raise last_exc
 
     def app_id_for_bundle(self, bundle_id):
         r = self.get(f"/v1/apps", **{"filter[bundleId]": bundle_id, "limit": 1})
@@ -680,26 +689,37 @@ def audit_app(root, asc):
             # — only the user-facing text label does.
             pc_no_icons = re.sub(
                 r'(?:systemName|icon)\s*:\s*"[^"]*"', '', pc_raw)
+            pc_no_icons = re.sub(r'\bImage\s*\([^)]*\)', '', pc_no_icons)
             pc = pc_no_icons.lower()
 
-            # Resolve L10n constants to actual strings (best-effort): pull strings
-            # from any L10n.swift in the project so we can see what `L10n.feature5`
-            # actually displays.
-            l10n_text = ""
-            for l10n in glob.glob(f"{root}/**/L10n.swift", recursive=True):
-                try:
-                    l10n_text += Path(l10n).read_text(errors="ignore") + "\n"
-                except Exception:
-                    pass
-            for x in glob.glob(f"{root}/**/*.xcstrings", recursive=True):
-                try:
-                    l10n_text += Path(x).read_text(errors="ignore") + "\n"
-                except Exception:
-                    pass
-            # If paywall references L10n.foo, append L10n's full body so foo's
-            # localized text is reachable to the keyword search.
-            if re.search(r"L10n\.\w+", pc_raw):
-                pc += "\n" + l10n_text.lower()
+            # Resolve only L10n constants referenced by this paywall. Pulling the
+            # whole L10n.swift file creates false positives from unrelated screens
+            # such as calendar/photo/chart labels.
+            l10n_refs = set(re.findall(r"\bL10n\.(\w+)", pc_raw))
+            if l10n_refs:
+                resolved = []
+                for l10n in glob.glob(f"{root}/**/L10n.swift", recursive=True):
+                    try:
+                        lines = Path(l10n).read_text(errors="ignore").splitlines()
+                    except Exception:
+                        continue
+                    for i, line in enumerate(lines):
+                        for ref in l10n_refs:
+                            if re.search(rf"\b(static\s+(?:var|let|func)\s+{re.escape(ref)}\b|case\s+{re.escape(ref)}\b)", line):
+                                resolved.extend(lines[i:i + 8])
+                                break
+                pc += "\n" + "\n".join(resolved).lower()
+
+            def has_token(txt, token):
+                if re.fullmatch(r"[a-z0-9_ -]+", token):
+                    return re.search(
+                        rf"(?<![a-z0-9_]){re.escape(token)}(?![a-z0-9_])",
+                        txt,
+                    ) is not None
+                return token in txt
+
+            def has_any_token(txt, tokens):
+                return any(has_token(txt, token) for token in tokens)
 
             BENEFIT_CHECKS = {
                 # icloud — both English/Chinese. Also requires a sync-intent word
@@ -748,14 +768,14 @@ def audit_app(root, asc):
                 ),
                 # Calendar export — EventKit
                 "calendar_export": (
-                    lambda txt: any(w in txt for w in ("calendar", "日历", "ical", "ics"))
-                        and any(w in txt for w in ("export", "sync", "导出", "导入", "同步", "add to")),
+                    lambda txt: has_any_token(txt, ("calendar", "日历", "ical", "ics"))
+                        and has_any_token(txt, ("export", "sync", "导出", "导入", "同步", "add to")),
                     r"EKEventStore|EKEvent|import EventKit",
                     "Calendar export/sync claimed but no EventKit code",
                 ),
                 # Photo attach
                 "photo_attach": (
-                    lambda txt: any(w in txt for w in ("photo", "image", "picture",
+                    lambda txt: has_any_token(txt, ("photo", "image", "picture",
                         "照片", "图片", "attach", "附件", "拍照")),
                     r"PhotosPicker|UIImagePickerController|PHPickerViewController|AVCaptureDevice",
                     "Photo attach claimed but no PhotosPicker/PHPicker/UIImagePickerController code",
