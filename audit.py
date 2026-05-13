@@ -270,7 +270,8 @@ def audit_app(root, asc):
         "NSLocationWhenInUseUsageDescription": "CLLocationManager|import CoreLocation",
         "NSMicrophoneUsageDescription":    "AVAudioRecorder|AVAudioEngine|AVAudioSession",
         "NSPhotoLibraryUsageDescription":  "PHPhotoLibrary|PhotosPicker|UIImagePickerController",
-        "NSMotionUsageDescription":        "CMMotionManager|CMPedometer",
+        "NSMotionUsageDescription":
+            "CMMotionManager|CMPedometer|CMAltimeter|startRelativeAltitudeUpdates",
         "NSBluetoothAlwaysUsageDescription": "CBCentralManager",
         "NSFaceIDUsageDescription":        "LAContext",
     }
@@ -571,7 +572,9 @@ def audit_app(root, asc):
     # entitlement system. Subscription expiry/refund will not revoke access.
     bypass_files = []
     for p in glob.glob(f"{root}/**/*.swift", recursive=True):
-        if "/build/" in p or "Manager.swift" in p or "Demo" in p:
+        if ("/build/" in p or "Manager.swift" in p or "Demo" in p or
+                "/Tests/" in p or "/UITests/" in p or
+                re.search(r"/[^/]*Tests/", p)):
             continue
         try:
             c = Path(p).read_text(errors="ignore")
@@ -611,7 +614,32 @@ def audit_app(root, asc):
                             if depth == 0: end = i; break
                     body = c[start:end+1]
                     if re.search(r"\.save\(", body) and not re.search(r"\.record\(for:", body):
-                        bad.append(f"{os.path.basename(p)}::{fn_name}")
+                        helper_fetches_record = False
+                        for call in re.finditer(r"\b(fetch\w*)\s*\(", body):
+                            helper_name = call.group(1)
+                            helper_re = re.compile(
+                                rf"func\s+{re.escape(helper_name)}\s*\([^)]*\)\s*"
+                                r"(?:async\s+)?(?:throws\s+)?(?:->\s*[\w<>\[\]?]+\s+)?\{",
+                                re.MULTILINE)
+                            helper_match = helper_re.search(c)
+                            if not helper_match:
+                                continue
+                            h_start = helper_match.end() - 1
+                            h_depth = 0
+                            h_end = h_start
+                            for j in range(h_start, len(c)):
+                                if c[j] == "{": h_depth += 1
+                                elif c[j] == "}":
+                                    h_depth -= 1
+                                    if h_depth == 0:
+                                        h_end = j
+                                        break
+                            helper_body = c[h_start:h_end+1]
+                            if re.search(r"\.record\(for:", helper_body):
+                                helper_fetches_record = True
+                                break
+                        if not helper_fetches_record:
+                            bad.append(f"{os.path.basename(p)}::{fn_name}")
             except Exception:
                 pass
         add("CUSTOM cloudkit-sync-fetch-then-modify", "blocker",
@@ -818,11 +846,32 @@ def audit_app(root, asc):
     if paywall_path:
         try:
             pc_raw = Path(paywall_path).read_text(errors="ignore")
-            # Check if any HStack/VStack containing Link uses faded white color
-            link_colors_bad = re.findall(
-                r'(Link\(.{0,80}destination:.+?\}.{0,200}\.foregroundColor\(\.white\.opacity\([\d.]+\)|'
-                r'\.foregroundColor\(\.white\.opacity\([\d.]+\).{0,300}Link\()',
-                pc_raw, re.DOTALL)
+            # Check legal links directly. Restore buttons/separators are often
+            # intentionally muted; do not flag those when each legal Link has
+            # an explicit blue foreground style.
+            link_colors_bad = []
+            legal_link_pat = re.compile(
+                r"Link\((?:(?!\n\s*(?:Button|Text|Link|\})).)*?"
+                r"(?:Privacy|Terms|隐私|使用条款)"
+                r"(?:(?!\n\s*(?:Button|Text|Link|\})).)*?destination\s*:",
+                re.DOTALL,
+            )
+            for m in legal_link_pat.finditer(pc_raw):
+                after = pc_raw[m.end():m.end() + 260]
+                explicit_blue = re.search(
+                    r"\.foreground(?:Color|Style)\(\.blue\)", after)
+                direct_faded = re.search(
+                    r"\.foregroundColor\(\.white\.opacity\([\d.]+\)", after)
+                surrounding = pc_raw[max(0, m.start() - 260):m.end() + 260]
+                inherited_faded = re.search(
+                    r"\.foregroundColor\(\.white\.opacity\([\d.]+\)",
+                    surrounding)
+                faded_before_blue = (
+                    direct_faded and
+                    (not explicit_blue or direct_faded.start() < explicit_blue.start())
+                )
+                if faded_before_blue or (inherited_faded and not explicit_blue):
+                    link_colors_bad.append(m.group(0))
             add("CUSTOM 3.1.2(c) paywall-legal-link-color", "blocker",
                 not link_colors_bad,
                 "Paywall Privacy/Terms Link wrapped in "
