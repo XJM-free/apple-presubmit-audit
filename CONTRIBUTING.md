@@ -1,13 +1,17 @@
 # Contributing
 
-Thanks for considering a contribution! This project lives on real rejection stories — yours could save someone weeks of debugging.
+Thanks for considering a contribution. New checks should be traceable to
+current documentation, directly observed submission state, or a clearly
+bounded heuristic.
 
 ## What to contribute
 
-**New rules from your own rejection history.** Each rule should map to:
-1. An actual rejection (yours or someone else's, with reference if public)
-2. A specific Apple Guideline section (or be marked CUSTOM if it's an inferred pattern)
-3. A grep-able heuristic that catches it
+**New evidence-backed rules.** Each rule should map to:
+
+1. An Apple requirement, a reproducible rejection, or a clearly labeled
+   engineering heuristic
+2. A specific Apple Guideline section when one exists (use `CUSTOM` otherwise)
+3. A detector with both triggering and non-triggering fixtures
 
 Examples of rule types we'd love:
 
@@ -20,40 +24,52 @@ Examples of rule types we'd love:
 ## How to add a rule
 
 1. Open `audit.py` and find the right category section (`1. SAFETY`, `2. PERFORMANCE`, etc.)
-2. Add your rule using the `add()` helper:
+2. Add your rule using the helper that matches its evidence:
 
    ```python
-   add("CATEGORY.SECTION rule-id", "blocker|high|low",
-       <bool: true if passing>,
-       "human-readable failure message")
+   official("CATEGORY.SECTION rule-id", "blocker|high|low", passed, message)
+   readiness("CUSTOM rule-id", "blocker|high|low", passed, message)
+   advisory("CATEGORY.SECTION rule-id", "high|low", passed, message)
    ```
 
-3. Add a one-line code comment explaining the rejection that motivated the rule
+   Use `official` only for a directly testable limit or field in current Apple
+   documentation. Use `readiness` for directly observed submission/catalog
+   state. Regex, keyword, typography, file-count, and rejection-derived rules
+   belong in `advisory`.
+
+3. Link the current Apple source when claiming an official requirement, or add
+   a one-line comment explaining the evidence and limits of an advisory
 4. Update `CHANGELOG.md` under `## [Unreleased]`
 5. Submit PR
 
 ## Severity levels
 
-- **`blocker`** — Apple will reject. Submission MUST stop.
-- **`high`** — Likely rejection or strong warning. Fix before submit.
-- **`low`** — Soft issue. Fix when convenient.
+- **`blocker`** — Only for directly observed `OFFICIAL` or `READINESS` failures.
+- **`high`** — Significant manual-review prompt.
+- **`low`** — Lower-confidence or product-quality prompt.
+
+An `ADVISORY` can never be a blocker and its message cannot use `must` or
+`required` to turn a heuristic into a false Apple mandate. Runtime guards and
+tests enforce this invariant.
 
 ## Code style
 
-- Stay in pure Python (no third-party deps beyond `requests` + `pyjwt`)
+- Support Python 3.10 or newer.
+- Keep third-party dependencies limited to `requirements.txt`.
 - Pattern: regex / file glob / string check (avoid spawning subprocesses)
-- Prefer false negatives over false positives — better to miss a rule than to block a legit submit
+- Prefer false negatives over false positives.
 
 ## Testing your rule
 
 ```bash
-# Audit a real project
-python3 audit.py --project ~/path/to/test-app --bundle-id com.example.test
+python3 -m pip install -r requirements.txt
+python3 -m unittest discover -s tests -v
+python3 -m py_compile audit.py
 ```
 
 Make sure your rule:
-- Doesn't trigger on a known-good app
-- Does trigger on a known-bad app
+- Doesn't trigger on a known-good fixture
+- Does trigger on a known-bad fixture
 - Has a clear, actionable error message
 
 ## Reporting bugs

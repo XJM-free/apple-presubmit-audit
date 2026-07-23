@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Apple App Store Pre-Submit Audit
-70+ checks across all 5 Apple Review Guideline categories
-+ custom rules learned from real rejections (HealthKit/Hardware/Plist mismatch).
+Evidence-labeled checks across Apple Review Guideline categories plus local
+engineering-readiness heuristics.
 
 Usage:
   # Audit local Xcode project against ASC metadata:
@@ -17,29 +17,43 @@ Usage:
 
 Exit codes:
   0 = no blockers
-  1 = blockers found (do NOT submit)
+  1 = one or more blocker findings detected
   2 = config error
 
 Read more: https://github.com/XJM-free/apple-presubmit-audit
 """
 import argparse
+import base64
 import glob
 import json
 import os
 import re
+import ssl
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 try:
     import requests
     import jwt as pyjwt
 except ImportError:
-    print("Install dependencies first:  pip install requests pyjwt cryptography")
+    print(
+        "Install dependencies first: pip install -r requirements.txt",
+        file=sys.stderr,
+    )
     sys.exit(2)
 
 
 # ─── ASC API helpers ──────────────────────────────────────────────────────────
+class ASCRequestError(RuntimeError):
+    """A sanitized App Store Connect failure safe to expose in CLI output."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
 class ASCClient:
     def __init__(self, key_id, issuer_id, key_file):
         self.key_id = key_id
@@ -56,24 +70,68 @@ class ASCClient:
         )
 
     def get(self, path, **params):
-        last_exc = None
         for attempt in range(3):
+            try:
+                token = self._token()
+            except Exception as exc:
+                raise ASCRequestError(
+                    "asc_authentication_failed",
+                    "cannot create an App Store Connect authentication token; "
+                    "verify the key ID, issuer ID, and private-key file",
+                ) from exc
+
             try:
                 r = self.s.get(
                     f"https://api.appstoreconnect.apple.com{path}",
-                    headers={"Authorization": f"Bearer {self._token()}"},
+                    headers={"Authorization": f"Bearer {token}"},
                     params=params,
                     timeout=60,
                 )
-                return r.json() if r.ok else {}
             except requests.RequestException as exc:
-                last_exc = exc
                 if attempt < 2:
                     time.sleep(1.5 * (attempt + 1))
-        raise last_exc
+                    continue
+                raise ASCRequestError(
+                    "asc_network_error",
+                    "App Store Connect could not be reached after three attempts",
+                ) from exc
+
+            if r.ok:
+                try:
+                    return r.json()
+                except ValueError as exc:
+                    raise ASCRequestError(
+                        "asc_invalid_response",
+                        "App Store Connect returned a non-JSON response",
+                    ) from exc
+
+            status = r.status_code
+            retryable = status == 429 or status >= 500
+            if retryable and attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+
+            if status in (401, 403):
+                code = "asc_authentication_failed"
+                message = (
+                    "App Store Connect rejected the supplied credentials "
+                    f"(HTTP {status})"
+                )
+            elif status == 429:
+                code = "asc_rate_limited"
+                message = "App Store Connect rate-limited the audit (HTTP 429)"
+            else:
+                code = "asc_request_failed"
+                message = f"App Store Connect request failed (HTTP {status})"
+            raise ASCRequestError(code, message)
+
+        raise ASCRequestError(
+            "asc_request_failed",
+            "App Store Connect request failed",
+        )
 
     def app_id_for_bundle(self, bundle_id):
-        r = self.get(f"/v1/apps", **{"filter[bundleId]": bundle_id, "limit": 1})
+        r = self.get("/v1/apps", **{"filter[bundleId]": bundle_id, "limit": 1})
         return (r.get("data") or [{}])[0].get("id")
 
     def fetch_metadata(self, app_id):
@@ -84,12 +142,21 @@ class ASCClient:
         out["app_state"] = v["attributes"].get("appStoreState")
         # localizations
         locs = self.get(f"/v1/appStoreVersions/{v['id']}/appStoreVersionLocalizations").get("data", [])
-        en = next((l for l in locs if l["attributes"]["locale"].startswith("en")), locs[0] if locs else None)
+        en = next(
+            (
+                localization
+                for localization in locs
+                if localization["attributes"]["locale"].startswith("en")
+            ),
+            locs[0] if locs else None,
+        )
         if en:
             out["description"] = en["attributes"].get("description") or ""
             out["supportUrl"] = en["attributes"].get("supportUrl") or ""
         out["locales_missing_support"] = [
-            l["attributes"]["locale"] for l in locs if not l["attributes"].get("supportUrl")
+            localization["attributes"]["locale"]
+            for localization in locs
+            if not localization["attributes"].get("supportUrl")
         ]
         # review notes
         rd = self.get(f"/v1/appStoreVersions/{v['id']}/appStoreReviewDetail").get("data") or {}
@@ -100,7 +167,14 @@ class ASCClient:
             out["appinfo_state"] = infos[0]["attributes"].get("state")
             out["appStoreAgeRating"] = infos[0]["attributes"].get("appStoreAgeRating")
             ilocs = self.get(f"/v1/appInfos/{infos[0]['id']}/appInfoLocalizations").get("data", [])
-            ien = next((l for l in ilocs if l["attributes"]["locale"].startswith("en")), ilocs[0] if ilocs else None)
+            ien = next(
+                (
+                    localization
+                    for localization in ilocs
+                    if localization["attributes"]["locale"].startswith("en")
+                ),
+                ilocs[0] if ilocs else None,
+            )
             if ien:
                 out["name"] = ien["attributes"].get("name") or ""
                 out["privacyPolicyUrl"] = ien["attributes"].get("privacyPolicyUrl") or ""
@@ -114,8 +188,8 @@ class ASCClient:
         for g in groups:
             gid = g["id"]
             glocs = self.get(f"/v1/subscriptionGroups/{gid}/subscriptionGroupLocalizations").get("data", [])
-            for l in glocs:
-                la = l["attributes"]
+            for localization in glocs:
+                la = localization["attributes"]
                 out["sub_group_loc_states"].append((gid, la.get("locale"), la.get("state")))
             subs = self.get(f"/v1/subscriptionGroups/{gid}/subscriptions").get("data", [])
             for sub in subs:
@@ -132,8 +206,9 @@ class ASCClient:
             avail_codes = []
             for t in ta.get("data", []):
                 if t["attributes"].get("available"):
-                    import base64, json as _j
-                    decoded = _j.loads(base64.b64decode(t["id"] + "==").decode())
+                    decoded = json.loads(
+                        base64.b64decode(t["id"] + "==").decode()
+                    )
                     avail_codes.append(decoded["t"])
             out["available_territories"] = avail_codes
             CN_ZONE = {"CHN","HKG","TWN","MAC"}
@@ -179,12 +254,40 @@ def get_plist_keys(root):
         return {}
 
 
-# ─── The audit (70+ rules) ────────────────────────────────────────────────────
+# ─── The audit ────────────────────────────────────────────────────────────────
 def audit_app(root, asc):
     """Returns list of (rule_id, severity, ok, message)."""
     results = []
-    def add(rule, sev, ok, msg=""):
-        results.append((rule, sev, ok, msg))
+
+    def add(basis, rule, sev, ok, msg=""):
+        """Record a finding with an explicit evidence basis.
+
+        OFFICIAL findings directly validate a published Apple field or limit.
+        READINESS findings directly observe a submission/catalog state that can
+        prevent the intended release or purchase flow.
+        ADVISORY findings are static, submission-derived heuristics. They can
+        suggest manual review, but they can never block a submission.
+        """
+        if basis == "ADVISORY":
+            if sev == "blocker":
+                raise ValueError(f"advisory rule cannot be a blocker: {rule}")
+            if re.search(r"\b(?:must|required)\b", msg, re.IGNORECASE):
+                raise ValueError(
+                    f"advisory message cannot assert a hard requirement: {rule}"
+                )
+            msg = f"Heuristic: {msg}"
+        if ok not in (True, False, None):
+            raise TypeError(f"rule result must be True, False, or None: {rule}")
+        results.append((f"{basis} {rule}", sev, ok, msg))
+
+    def official(rule, sev, ok, msg=""):
+        add("OFFICIAL", rule, sev, ok, msg)
+
+    def readiness(rule, sev, ok, msg=""):
+        add("READINESS", rule, sev, ok, msg)
+
+    def advisory(rule, sev, ok, msg=""):
+        add("ADVISORY", rule, sev, ok, msg)
 
     plist = get_plist_keys(root)
     desc = (asc.get("description") or "").lower()
@@ -195,53 +298,64 @@ def audit_app(root, asc):
     # ═══ 1. SAFETY ════════════════════════════════════════════════════════════
     # 1.1.6 — fake/prank content
     fake_words = ["fake gps", "fake location", "fake call", "prank battery", "prank charger"]
-    add("1.1.6 fake-content", "high",
+    advisory("1.1.6 fake-content-keywords", "high",
         not any(w in desc for w in fake_words),
-        "fake/prank content keyword in description")
+        "metadata contains a fake/prank keyword; review the complete context "
+        "against Guideline 1.1.6")
 
     # 1.4.1 — no false medical sensor claims
     medical = ["measure blood pressure", "measure blood sugar", "measure glucose",
                "measure body temperature", "measure spo2", "ekg measurement",
                "measure heart rate", "measure pulse", "measure blood oxygen",
                "ecg recording", "pulse oximeter", "diagnose"]
-    add("1.4.1 medical-sensor-claim", "blocker",
+    advisory("1.4.1 medical-sensor-claim", "high",
         not any(c in desc for c in medical),
-        "claims to measure medical values without certified hardware")
+        "metadata appears to promise a health measurement; verify the disclosed "
+        "methodology, accuracy evidence, hardware, and any regulatory clearance")
 
     # 1.3 — Kids Category strict rules
     if "kids" in (asc.get("category", "") or "").lower() or "for kids" in desc:
-        add("1.3 kids-no-3rd-party-ads", "blocker",
+        advisory("1.3 kids-third-party-ads", "high",
             not any(grep_dir(root, p) for p in ["AdMob", "FBAds", "GADBanner"]),
-            "Kids Category app must not use 3rd-party advertising")
+            "a Kids Category signal and a third-party advertising SDK were both "
+            "found; Apple permits only limited contextual-ad exceptions")
 
     # 1.5 — Support URL present
-    add("1.5 support-url", "high",
-        bool(asc.get("supportUrl")),
-        "Support URL is missing in App Store Connect")
+    official("1.5 support-url", "blocker",
+        None if "supportUrl" not in asc else bool(asc.get("supportUrl")),
+        "Support URL is missing in App Store Connect; this is a required "
+        "localizable app-version property")
 
     # ═══ 2. PERFORMANCE ═══════════════════════════════════════════════════════
     # 2.1 — App completeness
-    add("2.1 description-non-empty", "blocker",
-        len(desc) > 50,
-        f"description too short ({len(desc)} chars)")
-    add("2.1 placeholder-text", "high",
+    official("2.1 description-present", "blocker",
+        None if "description" not in asc else bool(desc.strip()),
+        "App Store description is missing; App Store Connect requires this field")
+    advisory("2.1 description-detail", "low",
+        not desc or len(desc) > 50,
+        f"description is only {len(desc)} characters; review whether it "
+        "accurately explains the core experience")
+    advisory("2.1 placeholder-text", "high",
         not re.search(r"\b(lorem|todo|placeholder|tbd|coming soon)\b", desc),
-        "placeholder text in description")
+        "description contains text that resembles an unfinished placeholder")
 
-    # 2.1 — Promised features must have implementation evidence
+    # 2.1 — Metadata/implementation consistency advisory
     if "play along" in desc or "playback" in desc or "tap to play" in desc:
         has_audio = bool(grep_dir(root, r"AVAudioEngine|AVAudioPlayer|AudioServicesPlay"))
-        add("2.1 audio-promise-implemented", "blocker", has_audio,
-            "audio playback promised in description but no AVAudio* code found")
+        advisory("2.1 audio-promise-implemented", "high", has_audio,
+            "audio playback is promised in metadata, but this source scan did "
+            "not find a common AVFoundation implementation marker")
     if "identify" in desc and ("ai" in desc or "photo" in desc):
         has_id = bool(grep_dir(root, r"VNCoreMLRequest|MLModel|URLSession"))
-        add("2.1 identify-promise-implemented", "blocker", has_id,
-            "AI identification promised but no ML/network code found")
+        advisory("2.1 identify-promise-implemented", "high", has_id,
+            "AI identification is promised in metadata, but this source scan did "
+            "not find a common Core ML or network implementation marker")
 
     # 2.3.1(a) — Review notes detail
-    add("2.3.1(a) notes-length", "blocker",
-        len(notes) > 200,
-        f"review notes too short ({len(notes)} chars, need >200)")
+    advisory("2.3.1(a) notes-detail", "low",
+        "notes" not in asc or len(notes) > 200,
+        f"review notes are {len(notes)} characters; Apple publishes no 200-character "
+        "minimum, so review only whether the notes explain non-obvious behavior")
     notes_required_groups = [
         ["app", "purpose", "describe"],         # purpose
         ["review", "test", "step", "how to"],    # test steps
@@ -249,27 +363,30 @@ def audit_app(root, asc):
         ["region", "country", "market", "available", "english"],   # region/locale
     ]
     notes_score = sum(1 for grp in notes_required_groups if any(w in notes for w in grp))
-    add("2.3.1(a) notes-required-items", "high",
-        notes_score >= 3,
-        f"notes missing items ({notes_score}/4: purpose/test steps/external services/region)")
+    advisory("2.3.1(a) notes-coverage", "low",
+        "notes" not in asc or notes_score >= 3,
+        f"notes cover {notes_score}/4 commonly useful topics: purpose, test steps, "
+        "external services, and regional behavior")
 
     # 2.3.7 — App name length ≤ 30
-    add("2.3.7 name-length", "blocker",
+    official("2.3.7 name-length", "blocker",
         len(name_asc) <= 30,
         f"App Store name too long ({len(name_asc)} chars, max 30)")
 
     # 2.3.8 — CFBundleDisplayName matches ASC name (or its brand prefix before " - " / ":")
     asc_brand = re.split(r"\s*[-–—:|]\s+", name_asc, maxsplit=1)[0].strip()
     name_match = (not name_plist) or name_plist == name_asc or name_plist == asc_brand
-    add("2.3.8 plist-name-matches-asc", "blocker", name_match,
-        f"Info.plist CFBundleDisplayName '{name_plist}' != ASC name '{name_asc}'")
+    advisory("2.3.8 plist-name-consistency", "high", name_match,
+        f"Info.plist CFBundleDisplayName '{name_plist}' differs from ASC name "
+        f"'{name_asc}'; Apple asks for similar metadata, not exact equality")
 
     # 2.3.10 — Don't mention competing platforms
-    add("2.3.10 no-competing-platforms", "blocker",
+    advisory("2.3.10 competing-platform-reference", "high",
         not re.search(r"\b(android|google play)\b", desc),
-        "description mentions competing platform")
+        "metadata names another mobile platform; inspect whether Apple's "
+        "approved-interactive-functionality exception applies")
 
-    # 2.5.1 — Permission strings declared MUST have framework code
+    # 2.5.1 — Advisory scan for possibly unused permission declarations
     PERM_CHECKS = {
         "NSHealthShareUsageDescription":   "import HealthKit|HKHealthStore",
         "NSHealthUpdateUsageDescription":  "import HealthKit|HKHealthStore",
@@ -287,8 +404,9 @@ def audit_app(root, asc):
     for key, code_pat in PERM_CHECKS.items():
         if key in plist:
             has_code = bool(grep_dir(root, code_pat))
-            add(f"2.5.1 {key}", "blocker", has_code,
-                f"declared in Info.plist but no matching framework code")
+            advisory(f"2.5.1 {key}", "high", has_code,
+                "the usage-description key is declared, but this regex scan did "
+                "not find a common matching framework call")
 
     # ═══ 3. BUSINESS (subscriptions & monetization) ═══════════════════════════
     paywall_paths = [find_one(root, "PaywallView.swift"), find_one(root, "SubscriptionView.swift")]
@@ -320,15 +438,20 @@ def audit_app(root, asc):
                                    "自动续订", "自动续费"]
                 discloses = (any(m in full for m in disclosure_markers)
                              and any(p in full for p in pricing_markers))
-                add("3.1.1 trial-disclosure", "blocker", discloses,
-                    "free trial mentioned but post-trial price/period not clearly disclosed")
+                advisory("3.1.1 trial-disclosure", "high", discloses,
+                    "a free trial is mentioned, but this text scan did not find "
+                    "both post-trial timing and pricing/renewal language")
 
-            # 3.1.2(c) — auto-renewing CTA (English + Simplified + Traditional Chinese)
+            # 3.1.2(c) — renewal disclosure wording. Apple requires clear
+            # subscription information, but does not prescribe the literal
+            # phrase "auto-renewing" on the CTA.
             has_ar = bool(re.search(
                 r"auto-renewing|auto-renews|自动续订|自动续费|自动续期|自動續訂|自動續費|自動續期",
                 pc + xcs, re.I))
-            add("3.1.2(c) auto-renewing-CTA", "blocker", has_ar,
-                "subscribe button must say 'auto-renewing'")
+            advisory("3.1.2(c) renewal-disclosure-copy", "high", has_ar,
+                "this text scan did not find common renewal wording; manually "
+                "confirm that price, duration, and renewal terms are clear. "
+                "Apple does not prescribe the literal phrase 'auto-renewing'")
 
             # 3.1.2(c) — price prominence. Apple requires clear disclosure, not
             # a literal `.heavy` font token. Treat 30pt+ bold/heavy system text
@@ -340,34 +463,44 @@ def audit_app(root, asc):
                 r"\.font\(\s*\.(?:largeTitle|title)\s*(?:\.bold\(\)|\.weight\(\s*\.(?:bold|heavy|semibold)\s*\))",
                 pc,
             ))
-            add("3.1.2(c) price-36pt-heavy", "high", has_36pt,
-                "price not displayed in 36pt heavy weight (most prominent)")
+            advisory("3.1.2(c) price-prominence", "low", has_36pt,
+                "this typography scan did not find one of its common prominent "
+                "price styles; Apple publishes no 36-point font-size rule")
 
             # 3.1.2(c) — Restore Purchases button
-            add("3.1.2(c) restore-button", "blocker",
+            advisory("3.1.1 restore-mechanism", "high",
                 "Restore" in pc or "restore" in pc.lower(),
-                "Restore Purchases button not found in paywall")
+                "this paywall source scan did not find a Restore label; verify "
+                "that restorable purchases have an accessible restore mechanism")
 
             # 3.1.2(c) — Privacy + Terms links
-            add("3.1.2(c) privacy-link", "blocker",
+            advisory("3.1.2(c) privacy-link", "high",
                 "rivacy" in pc,
-                "Privacy Policy link missing in paywall")
-            add("3.1.2(c) terms-link", "blocker",
+                "this paywall source scan did not find a Privacy Policy link")
+            advisory("3.1.2(c) terms-link", "high",
                 bool(re.search(r"[Tt]erms|EULA|stdeula", pc)),
-                "Terms of Use / EULA link missing in paywall")
+                "this paywall source scan did not find a Terms of Use or EULA link")
         except Exception:
             pass
 
-    # 3.1.2(c) — EULA / Terms link in description (broad detection)
-    eula_markers = [
-        "eula", "stdeula",
-        "terms of use", "terms of service", "terms:",
-        "服务条款", "使用条款", "用户协议", "用户条款",
-    ]
-    has_eula = any(m in desc for m in eula_markers) or \
-               bool(re.search(r"https?://[^\s]+(terms|legal|tos|eula)", desc))
-    add("3.1.2(c) eula-in-description", "blocker", has_eula,
-        "EULA / Terms of Use link missing in App Store description")
+    # 3.1.2(c) — EULA / Terms metadata advisory, only for subscription apps.
+    has_subscription_signals = bool(
+        paywall
+        or asc.get("sub_state")
+        or asc.get("sub_states")
+        or re.search(r"\b(?:subscription|subscribe)\b", desc)
+    )
+    if has_subscription_signals:
+        eula_markers = [
+            "eula", "stdeula",
+            "terms of use", "terms of service", "terms:",
+            "服务条款", "使用条款", "用户协议", "用户条款",
+        ]
+        has_eula = any(m in desc for m in eula_markers) or \
+                   bool(re.search(r"https?://[^\s]+(terms|legal|tos|eula)", desc))
+        advisory("3.1.2(c) terms-metadata", "high", has_eula,
+            "this description scan did not find Terms of Use or EULA text; verify "
+            "the applicable subscription metadata and agreement fields")
 
     # 3.2.2(x) — no forced rating (precise: actual gating code, not description text)
     bad_review = [
@@ -375,9 +508,9 @@ def audit_app(root, asc):
         "guard.*hasRated.*else",
         "requestReview\\(\\).*lockFeature",
     ]
-    add("3.2.2(x) no-forced-rating", "high",
+    advisory("3.2.2(x) forced-rating-pattern", "high",
         not any(grep_dir(root, p) for p in bad_review),
-        "code appears to force rating before functionality unlock")
+        "a source pattern resembles gating functionality on an App Store rating")
 
     # ═══ 4. DESIGN ════════════════════════════════════════════════════════════
     # 4.2 / 4.3 — minimum functionality + Spam
@@ -416,32 +549,40 @@ def audit_app(root, asc):
     custom_views = sorted(set(custom_views))
     func_score = len(custom_views) + service_count + model_count
 
-    add("4.2 minimum-functionality", "high",
+    advisory("4.2 minimum-functionality-shape", "low",
         len(custom_views) >= 2 or func_score >= 3 or total_swift >= 4,
-        f"{len(custom_views)} views + {service_count} services + {model_count} models, total {total_swift} non-boilerplate")
-    add("4.3 unique-views-anti-spam", "high",
+        f"project shape is {len(custom_views)} views, {service_count} services, "
+        f"{model_count} models, and {total_swift} non-boilerplate files; file "
+        "counts do not determine compliance")
+    advisory("4.3 duplicate-app-shape", "low",
         len(custom_views) >= 3 or func_score >= 4 or total_swift >= 5,
-        f"{len(custom_views)} views + {service_count} services + {model_count} models, total {total_swift} non-boilerplate")
+        f"project shape is {len(custom_views)} views, {service_count} services, "
+        f"{model_count} models, and {total_swift} non-boilerplate files; manually "
+        "review whether the app provides a distinct experience")
 
     # 4.8 — third-party login requires Apple Sign-In
     has_3rd = bool(grep_dir(root, r"GIDSignIn|FBSDKLogin|TwitterAuth"))
     if has_3rd:
         has_apple = bool(grep_dir(root, r"SignInWithAppleButton|ASAuthorizationAppleIDProvider"))
-        add("4.8 sign-in-with-apple", "blocker", has_apple,
-            "third-party login (Google/FB/Twitter) requires Sign in with Apple")
+        advisory("4.8 sign-in-with-apple", "high", has_apple,
+            "a third-party login SDK was found without a common Sign in with "
+            "Apple marker; manually check Guideline 4.8 and its exceptions")
 
-    # 4.5.4 — push notifications must be opt-in, not for marketing without consent
+    # 4.5.4 — advisory scan for notification authorization flow
     if "UNUserNotificationCenter" in " ".join(grep_dir(root, "UNUserNotificationCenter")):
         # Soft check: ensure opt-in dialog code exists
         has_optin = bool(grep_dir(root, r"requestAuthorization|requestNotificationAuthorization"))
-        add("4.5.4 push-opt-in", "high", has_optin,
-            "push notifications used but no requestAuthorization call found")
+        advisory("4.5.4 push-opt-in", "high", has_optin,
+            "push notification code was found, but this scan did not locate a "
+            "common authorization request")
 
     # ═══ 5. LEGAL ═════════════════════════════════════════════════════════════
     # 5.1.1(i) — Privacy Policy in ASC + in app
-    add("5.1.1(i) privacy-asc", "blocker",
-        bool(asc.get("privacyPolicyUrl")),
-        "Privacy Policy URL missing in App Store Connect")
+    official("5.1.1(i) privacy-asc", "blocker",
+        None if "privacyPolicyUrl" not in asc
+        else bool(asc.get("privacyPolicyUrl")),
+        "Privacy Policy URL missing in App Store Connect; Apple requires one "
+        "for every app")
     privacy_patterns = [
         r"[Pp]rivacy.{0,3}[Pp]olicy",  # Privacy Policy / privacy-policy / privacy_policy
         r"/privacy",                      # URL containing /privacy
@@ -449,69 +590,89 @@ def audit_app(root, asc):
         r"隐私政策",
     ]
     has_priv_in_app = any(grep_dir(root, p) for p in privacy_patterns)
-    add("5.1.1(i) privacy-in-app", "blocker", has_priv_in_app,
-        "Privacy Policy link not found in app code")
+    advisory("5.1.1(i) privacy-in-app", "high", has_priv_in_app,
+        "this source scan did not find a common in-app Privacy Policy link; "
+        "verify that the policy is easily accessible in the app")
 
-    # 5.1.1(i) — Privacy URL must be reachable (HTTP 200) — Apple's automated review fetches it
+    # 5.1.1(i) — advisory HTTP reachability probe (HEAD can false-negative)
     privacy_url = asc.get("privacyPolicyUrl") or ""
     if privacy_url:
         try:
-            import urllib.request, ssl
             req = urllib.request.Request(privacy_url, method="HEAD",
                                           headers={"User-Agent": "Mozilla/5.0"})
             ctx = ssl.create_default_context()
             with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
                 code = resp.status
-        except Exception as e:
+        except Exception:
             code = 0
-        add("5.1.1(i) privacy-url-reachable", "blocker", 200 <= (code or 0) < 300,
-            f"Privacy URL HTTP {code} (must be 200; Apple review will fail)")
+        advisory("5.1.1(i) privacy-url-reachable", "high",
+            200 <= (code or 0) < 400,
+            f"the HEAD request returned HTTP {code}; confirm the public page is "
+            "reachable with a normal browser because some hosts reject HEAD")
 
     support_url = asc.get("supportUrl") or ""
     if support_url:
         try:
-            import urllib.request, ssl
             req = urllib.request.Request(support_url, method="HEAD",
                                           headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=8, context=ssl.create_default_context()) as resp:
                 code = resp.status
         except Exception:
             code = 0
-        add("1.5 support-url-reachable", "blocker", 200 <= (code or 0) < 300,
-            f"Support URL HTTP {code} (must be 200)")
+        advisory("1.5 support-url-reachable", "high",
+            200 <= (code or 0) < 400,
+            f"the HEAD request returned HTTP {code}; confirm the support page "
+            "is publicly reachable because some hosts reject HEAD")
 
     # 5.1.1(v) — Account deletion (if account exists)
     has_account = bool(grep_dir(root, r"signIn|register|createAccount|loginEmail"))
     if has_account:
         has_delete = bool(grep_dir(root, r"deleteAccount|account.*delete"))
-        add("5.1.1(v) account-deletion-ui", "blocker", has_delete,
-            "app has account creation but no in-app account deletion UI")
+        advisory("5.1.1(v) account-deletion-ui", "high", has_delete,
+            "account-like source markers were found without a common in-app "
+            "account-deletion marker; manually verify the actual account flow")
 
-    # 5.1.1(ix) — Gambling must be NONE for individual developers
-    add("5.1.1(ix) gambling-none", "blocker",
-        asc.get("gamblingSimulated") == "NONE",
-        f"gamblingSimulated={asc.get('gamblingSimulated')} (must be NONE for individuals)")
+    # Simulated gambling is an age-rating input; it is not categorically
+    # forbidden for individual developers. Real-money gaming is governed by
+    # Guideline 5.3 and cannot be inferred from this single ASC field.
+    gambling_simulated = asc.get("gamblingSimulated")
+    if gambling_simulated not in (None, "?"):
+        advisory("2.3.6 gambling-rating-consistency", "low", True,
+            f"simulated-gambling declaration is {gambling_simulated}; compare "
+            "it with the app's actual content when answering the age-rating questionnaire")
 
     # 2.3.6 — App Store age rating must be assigned
     age_rating = asc.get("appStoreAgeRating")
-    valid_ratings = {"FOUR_PLUS", "NINE_PLUS", "TWELVE_PLUS", "SEVENTEEN_PLUS"}
-    add("2.3.6 age-rating-set", "blocker", age_rating in valid_ratings,
-        f"appStoreAgeRating={age_rating} (must be FOUR_PLUS / NINE_PLUS / TWELVE_PLUS / SEVENTEEN_PLUS)")
+    valid_ratings = {
+        "L", "ALL", "ZERO_ZERO",
+        "ONE_PLUS", "TWO_PLUS", "THREE_PLUS", "FOUR_PLUS", "FIVE_PLUS",
+        "SIX_PLUS", "SEVEN_PLUS", "EIGHT_PLUS", "NINE_PLUS", "TEN_PLUS",
+        "ELEVEN_PLUS", "TWELVE_PLUS", "THIRTEEN_PLUS", "FOURTEEN_PLUS",
+        "FIFTEEN_PLUS", "SIXTEEN_PLUS", "SEVENTEEN_PLUS", "EIGHTEEN_PLUS",
+        "NINETEEN_PLUS", "TWENTY_PLUS", "TWENTY_ONE_PLUS",
+    }
+    official("2.3.6 age-rating-set", "blocker",
+        None if "appStoreAgeRating" not in asc
+        else age_rating in valid_ratings,
+        f"appStoreAgeRating={age_rating}; a published AppStoreAgeRating value "
+        "other than UNRATED is required")
 
     # 2.3.6 — appInfo state should not be REJECTED (means age rating not applied)
     appinfo_state = asc.get("appinfo_state")
-    add("2.3.6 appinfo-not-rejected", "blocker",
-        appinfo_state not in ("REJECTED",),
+    readiness("2.3.6 appinfo-not-rejected", "blocker",
+        None if "appinfo_state" not in asc
+        else appinfo_state not in ("REJECTED",),
         f"appInfo state={appinfo_state} (REJECTED → re-save Age Rating in ASC web UI to refresh)")
 
     # 5.1.1(ix) — regulated industry keywords
     forbidden = ["banking", "blood pressure monitor", "cryptocurrency exchange",
                  "casino", "sports betting", "real money gambling", "lottery ticket"]
-    add("5.1.1(ix) regulated-fields", "blocker",
+    advisory("5.3 regulated-industry-keywords", "high",
         not any(w in desc for w in forbidden),
-        "description contains regulated-industry keywords forbidden to individual devs")
+        "metadata contains a regulated-industry keyword; check the specific "
+        "licensing, legal-entity, geography, and review-note rules that apply")
 
-    # 5.1.1(iii) — data sharing must require user opt-in (heuristic)
+    # 5.1.1(iii) — advisory scan for a data-sharing consent flow
     if "share" in desc and ("data" in desc or "personal" in desc):
         has_consent = bool(grep_dir(
             root,
@@ -519,21 +680,23 @@ def audit_app(root, asc):
             r"UICloudSharingController|ShareLink|collaborat|invite|AI.*consent|"
             r"showingConsentAlert|consentAlert",
         ))
-        add("5.1.1(iii) data-sharing-opt-in", "high", has_consent,
-            "description mentions data sharing but no consent dialog code found")
+        advisory("5.1.1(iii) data-sharing-opt-in", "high", has_consent,
+            "metadata mentions sharing personal data, but this scan did not find "
+            "a common consent or sharing-control marker")
 
     # 5.2.1 — content rights (heuristic: warn if tutorial/quote content without attribution)
     if any(w in desc for w in ["famous quote", "movie clip", "song lyric", "celebrity"]):
-        add("5.2.1 content-ownership", "blocker", False,
-            "description hints at third-party content; verify you own rights or have license")
+        advisory("5.2.1 content-ownership", "high", False,
+            "metadata hints at third-party content; verify ownership or licensing")
 
-    # 5.4 — VPN/Network Extension: must justify in plist
+    # 5.4 — advisory scan for VPN/Network Extension review context
     if "NetworkExtension" in str(plist) or "vpn" in desc:
-        add("5.4 vpn-justification", "high", "vpn" in notes,
-            "VPN/NetworkExtension entitlement requires justification in review notes")
+        advisory("5.4 vpn-review-context", "high", "vpn" in notes,
+            "VPN or Network Extension signals were found without matching review-note "
+            "context; check Guideline 5.4 and organization/account eligibility")
 
     # ═══ CUSTOM (lessons learned from real rejections) ════════════════════════
-    # Detector / Meter / Scanner class apps must declare "no external hardware"
+    # Detector / Meter / Scanner apps may benefit from clear hardware context
     DETECTOR_KW = ["detector", "scanner", "meter", "decibel", "lux meter",
                    "metal detector", "stud finder", "heart rate monitor", "emf"]
     HW_DISCLAIMER = ["no external hardware", "no bluetooth", "built-in", "100% software",
@@ -544,59 +707,64 @@ def audit_app(root, asc):
             any(d in desc[:500] for d in HW_DISCLAIMER)
             or any(d in notes for d in HW_DISCLAIMER)
         )
-        add("CUSTOM detector-no-hardware-disclaimer", "blocker", has_disclaimer,
-            "Detector/Meter app must explicitly say 'NO external hardware required' "
-            "or Apple will ask for hardware demo video")
+        advisory("CUSTOM detector-hardware-context", "high", has_disclaimer,
+            "detector/meter metadata does not explain whether it uses built-in "
+            "sensors or external hardware; reviewers may request clarification")
 
     # Health keyword without HealthKit → 2.5.1 risk
     if any(k in desc for k in ["health", "medical", "wellness"]) and "menstr" not in desc:
         if "HealthKit" not in str(plist):
-            add("CUSTOM health-keyword-no-healthkit", "high", True,
+            advisory("CUSTOM health-keyword-no-healthkit", "low", True,
                 "health keywords in description without HealthKit may trigger 2.5.1 review")
 
-    # Subscription state must be ready for review
+    # Subscription state should be compatible with the intended review flow.
     sub_state = asc.get("sub_state")
     if sub_state and sub_state not in ("APPROVED", "WAITING_FOR_REVIEW", "IN_REVIEW", "READY_TO_SUBMIT"):
-        add("CUSTOM subscription-state-ready", "blocker", False,
-            f"subscription state={sub_state} (must be READY_TO_SUBMIT or higher)")
+        readiness("CUSTOM subscription-state-ready", "blocker", False,
+            f"subscription state={sub_state}; resolve its App Store Connect "
+            "status before adding it to the intended review submission")
 
     # ─── 2026-04 NEW lessons (subscription catalog & CloudKit) ────────────────
     # CUSTOM A: per-sub availability territories (0 territories = product UNBUYABLE)
     sub_terrs = asc.get("sub_territories") or {}
     for pid, count in sub_terrs.items():
-        add(f"CUSTOM sub-availability-{pid}", "blocker", count > 0,
+        readiness(f"CUSTOM sub-availability-{pid}", "blocker", count > 0,
             f"sub {pid} has {count} territories (0 = unbuyable in StoreKit)")
         if 0 < count < 50:
-            add(f"CUSTOM sub-territories-coverage-{pid}", "high", False,
-                f"sub {pid} only in {count} territories (low market coverage)")
+            advisory(f"CUSTOM sub-territories-coverage-{pid}", "low", False,
+                f"subscription {pid} is available in {count} territories; verify "
+                "that this matches the intended launch markets")
 
-    # CUSTOM B: each sub state must be APPROVED for buying
-    # (READY_TO_SUBMIT means never reviewed → catalog won't show product)
+    # CUSTOM B: a first subscription in READY_TO_SUBMIT still needs review.
+    # Apple currently allows direct IAP submissions, but the first item of each
+    # type is submitted with a new app version.
+    # https://developer.apple.com/help/app-store-connect/manage-submissions-to-app-review/submit-an-in-app-purchase/
     for pid, state in (asc.get("sub_states") or []):
         if state == "READY_TO_SUBMIT":
-            add(f"CUSTOM sub-never-submitted-{pid}", "blocker", False,
-                f"sub {pid} state={state} → first-time IAP must attach to App version + Submit (web UI only)")
+            readiness(f"CUSTOM sub-never-submitted-{pid}", "blocker", False,
+                f"subscription {pid} is {state}; include the first subscription "
+                "of this type with a new app version submission")
 
     # CUSTOM C: subscription group localizations stuck in PREPARE_FOR_SUBMISSION
     # → entire sub catalog unavailable, even if sub itself is APPROVED.
     # Symptom: 'in-app-purchasables' API returns empty for the bundle.
     stuck_locs = [(gid, loc, st) for gid, loc, st in (asc.get("sub_group_loc_states") or [])
                   if st not in ("APPROVED", "WAITING_FOR_REVIEW", "IN_REVIEW")]
-    add("CUSTOM sub-group-loc-stuck", "blocker",
+    advisory("CUSTOM sub-group-localization-state", "high",
         not stuck_locs,
-        f"{len(stuck_locs)} group localizations stuck (PREPARE_FOR_SUBMISSION) → "
-        f"sub invisible in StoreKit catalog. DELETE via API or trigger submit. "
-        f"Examples: {stuck_locs[:3]}" if stuck_locs else "")
+        f"{len(stuck_locs)} subscription-group localizations are outside reviewed "
+        f"states; verify catalog visibility before release. Examples: "
+        f"{stuck_locs[:3]}" if stuck_locs else "")
 
-    # CUSTOM D: SubscriptionManager must listen for Transaction.updates
-    # (without it: promo codes / auto-renewal / refund / family-sharing changes
-    # are NOT propagated to the app's isPremium state)
+    # CUSTOM D: advisory scan for Transaction.updates handling
+    # Without an updates listener, entitlement changes can be missed until the
+    # app performs another explicit entitlement refresh.
     sm_files = grep_dir(root, r"Product\.products|Transaction\.currentEntitlements")
     if sm_files:
         has_tx_updates = bool(grep_dir(root, r"Transaction\.updates"))
-        add("CUSTOM transaction-updates-listener", "high", has_tx_updates,
-            "SubscriptionManager doesn't listen to Transaction.updates → "
-            "promo codes / refunds / Family Sharing changes won't be detected")
+        advisory("CUSTOM transaction-updates-listener", "high", has_tx_updates,
+            "this source scan did not find Transaction.updates near StoreKit "
+            "entitlement code; verify how asynchronous entitlement changes are handled")
 
     # CUSTOM E: isPremium bypass detection
     # Direct writes to a non-StoreKit isPremium = true field bypass the entire
@@ -614,9 +782,10 @@ def audit_app(root, asc):
                     bypass_files.append(os.path.basename(p))
         except Exception:
             pass
-    add("CUSTOM is-premium-bypass", "blocker",
+    advisory("CUSTOM is-premium-bypass", "high",
         not bypass_files,
-        f"isPremium = true written directly (bypassing StoreKit) in: {bypass_files}")
+        f"a direct premium-state write may bypass StoreKit entitlement checks "
+        f"in: {bypass_files}")
 
     # CUSTOM F: CloudKit sync — fetch existing record before save (otherwise:
     # "record to insert already exists" CKError 11 on every sync after the first).
@@ -639,10 +808,13 @@ def audit_app(root, asc):
                     depth = 0
                     end = start
                     for i in range(start, len(c)):
-                        if c[i] == "{": depth += 1
+                        if c[i] == "{":
+                            depth += 1
                         elif c[i] == "}":
                             depth -= 1
-                            if depth == 0: end = i; break
+                            if depth == 0:
+                                end = i
+                                break
                     body = c[start:end+1]
                     if re.search(r"\.save\(", body) and not re.search(r"\.record\(for:", body):
                         helper_fetches_record = False
@@ -659,7 +831,8 @@ def audit_app(root, asc):
                             h_depth = 0
                             h_end = h_start
                             for j in range(h_start, len(c)):
-                                if c[j] == "{": h_depth += 1
+                                if c[j] == "{":
+                                    h_depth += 1
                                 elif c[j] == "}":
                                     h_depth -= 1
                                     if h_depth == 0:
@@ -673,16 +846,15 @@ def audit_app(root, asc):
                             bad.append(f"{os.path.basename(p)}::{fn_name}")
             except Exception:
                 pass
-        add("CUSTOM cloudkit-sync-fetch-then-modify", "blocker",
+        advisory("CUSTOM cloudkit-sync-fetch-then-modify", "high",
             not bad,
-            f"sync/push function calls db.save() without fetching existing record first → "
-            f"CKError 11 'already exists' on every sync after the first. Fix: "
-            f"`if let existing = try? await db.record(for: id) {{ record = existing }}`. "
-            f"Affected: {bad}" if bad else "")
+            f"sync/push code saves a constructed CKRecord without a fetch in the "
+            f"same function; review the actual record lifecycle and save policy "
+            f"for possible serverRecordChanged/already-exists failures. Affected: "
+            f"{bad}" if bad else "")
 
-    # CUSTOM G: CloudKit production schema must include declared record types
-    # (cktool import-schema does NOT auto-promote dev → prod; production schema
-    # must be deployed via CloudKit Dashboard for app users to write records.)
+    # CUSTOM G: advisory prompt to confirm that production has the record types
+    # referenced by source. Static source cannot observe the deployed schema.
     ck_record_types = set()
     for p in grep_dir(root, r'rootRecordType\s*=\s*"|recordType\s*=\s*"'):
         try:
@@ -693,12 +865,12 @@ def audit_app(root, asc):
             pass
     if ck_record_types:
         ck_prod_verified = bool(asc.get("cloudkit_production_schema_verified"))
-        add("CUSTOM cloudkit-prod-schema-deploy", "high",
+        advisory("CUSTOM cloudkit-prod-schema-deploy", "high",
             ck_prod_verified,
             f"Verify CloudKit PRODUCTION schema has record types: {sorted(ck_record_types)}. "
             f"Run: xcrun cktool export-schema --container-id <id> --environment PRODUCTION")
 
-    # CUSTOM H: Paywall benefit strings must have code implementation
+    # CUSTOM H: advisory consistency scan for paywall benefits vs source markers
     # (extends earlier "Play along/Identify" checks to common subscription claims)
     paywall_path = next((p for p in [find_one(root, "PaywallView.swift"),
                                       find_one(root, "SubscriptionView.swift")]
@@ -747,8 +919,8 @@ def audit_app(root, asc):
             BENEFIT_CHECKS = {
                 # icloud — both English/Chinese. Also requires a sync-intent word
                 # nearby ('sync','backup','同步','备份','iCloud') — bare 'icloud'
-                # in non-feature text shouldn't trigger. Heuristic: paywall must
-                # have BOTH 'icloud' AND a sync intent token.
+                # in non-feature text should not trigger. Require both 'icloud'
+                # and a sync-intent token before treating it as a feature claim.
                 "icloud_sync": (
                     lambda txt: "icloud" in txt and any(
                         w in txt for w in ("sync", "backup", "同步", "备份", "across devices")
@@ -767,7 +939,7 @@ def audit_app(root, asc):
                     "CSV export claimed but no CSV writing code (looked for "
                     "exportCSV function, csv variables, .csv file refs, CSVWriter)",
                 ),
-                # unlimited — must have a free-limit gate
+                # unlimited — look for a corresponding free-limit gate
                 "unlimited_gate": (
                     lambda txt: any(w in txt for w in ("unlimited", "无限",
                         "no limit", "无限制")),
@@ -854,18 +1026,18 @@ def audit_app(root, asc):
             for rule_name, (matches, code_pat, msg) in BENEFIT_CHECKS.items():
                 if matches(pc):
                     has_impl = bool(grep_dir(root, code_pat))
-                    add(f"CUSTOM paywall-benefit-{rule_name}", "high", has_impl, msg)
+                    advisory(f"CUSTOM paywall-benefit-{rule_name}", "high", has_impl, msg)
         except Exception:
             pass
 
     # All locales must have supportUrl
     missing = asc.get("locales_missing_support") or []
-    add("CUSTOM all-locales-have-support-url", "blocker",
-        not missing,
-        f"locales missing supportUrl: {missing}")
+    official("1.5 all-locales-have-support-url", "blocker",
+        None if "locales_missing_support" not in asc else not missing,
+        f"localizations missing the required supportUrl field: {missing}")
 
     # CUSTOM I: NSXxxUsageDescription declared but framework code missing
-    # (5.1.1 — declared permission must be used; symptoms beyond 2.5.1 covered above)
+    # Advisory variant of the declared-permission/framework pairing above
     USAGE_FRAMEWORK_PAIRS = {
         "NSCameraUsageDescription":
             r"AVCaptureDevice|UIImagePickerController|PhotosPicker|VNRecognize|"
@@ -887,11 +1059,12 @@ def audit_app(root, asc):
     for key, code_pat in USAGE_FRAMEWORK_PAIRS.items():
         if key in plist:
             has_code = bool(grep_dir(root, code_pat))
-            add(f"CUSTOM 5.1.1 {key}", "blocker", has_code,
-                f"{key} declared in Info.plist but no matching framework code "
+            advisory(f"CUSTOM 5.1.1 {key}", "high", has_code,
+                f"{key} is declared in Info.plist, but this scan found no common "
+                "matching framework code "
                 f"(grep: {code_pat[:60]}...)")
 
-    # CUSTOM J: Paywall legal Link colors must be visible (not white-on-white).
+    # CUSTOM J: advisory scan for potentially low-contrast paywall legal links.
     # Pattern observed in production: HStack of [Restore button + Privacy
     # Link + Terms Link] all wrapped in `.foregroundColor(.white.opacity(0.5))`
     # makes the Links nearly invisible. Apple requires Privacy + Terms links
@@ -925,7 +1098,7 @@ def audit_app(root, asc):
                 )
                 if faded_before_blue or (inherited_faded and not explicit_blue):
                     link_colors_bad.append(m.group(0))
-            add("CUSTOM 3.1.2(c) paywall-legal-link-color", "blocker",
+            advisory("CUSTOM 3.1.2(c) paywall-legal-link-color", "high",
                 not link_colors_bad,
                 "Paywall Privacy/Terms Link wrapped in "
                 "`.foregroundColor(.white.opacity(.x))` — links invisible. "
@@ -937,19 +1110,24 @@ def audit_app(root, asc):
     # existing users on schema migration when adding new fields.
     bad_model_fields = []
     for p in glob.glob(f"{root}/**/*.swift", recursive=True):
-        if "/build/" in p or "/.build/" in p: continue
+        if "/build/" in p or "/.build/" in p:
+            continue
         try:
             c = Path(p).read_text(errors="ignore")
             # Find @Model class blocks
             for m_class in re.finditer(r"@Model[^{]*?\bclass\s+(\w+)\s*\{", c):
                 cls_name = m_class.group(1)
                 start = m_class.end() - 1
-                depth = 0; end = start
+                depth = 0
+                end = start
                 for i in range(start, len(c)):
-                    if c[i] == "{": depth += 1
+                    if c[i] == "{":
+                        depth += 1
                     elif c[i] == "}":
                         depth -= 1
-                        if depth == 0: end = i; break
+                        if depth == 0:
+                            end = i
+                            break
                 body = c[start:end+1]
                 # Find `var name: Type` without `=` default value
                 for m_field in re.finditer(
@@ -958,14 +1136,14 @@ def audit_app(root, asc):
                     bad_model_fields.append(f"{cls_name}.{m_field.group(1)}: {m_field.group(2)}")
         except Exception:
             pass
-    add("CUSTOM swiftdata-model-defaults", "high",
+    advisory("CUSTOM swiftdata-model-defaults", "high",
         not bad_model_fields,
-        f"@Model fields without property-level default values — schema "
-        f"migration will crash existing users when this field is added: "
+        f"@Model fields without inline defaults may need a compatible initializer, "
+        f"default, or migration plan before being added to an existing store: "
         f"{bad_model_fields[:5]}")
 
-    # CUSTOM L: AI service body must include `model` field (DeepSeek/OpenAI
-    # require it; nginx reverse-proxy can't inject so client must send it).
+    # CUSTOM L: advisory for direct provider calls that commonly need a `model`
+    # field; a proxy may legitimately supply a default.
     ai_files = grep_dir(root, r"/api/ai|/api/vision|api\.deepseek\.com|api\.openai\.com|api\.anthropic\.com")
     for p in ai_files:
         try:
@@ -973,10 +1151,11 @@ def audit_app(root, asc):
             if 'URLSession' in c or 'request.httpBody' in c:
                 # Look for body dict with messages but check for model
                 if re.search(r'"messages"\s*:', c) and not re.search(r'"model"\s*:', c):
-                    add(f"CUSTOM ai-body-missing-model-{os.path.basename(p)}",
-                        "blocker", False,
-                        f"{os.path.basename(p)}: AI request body has 'messages' "
-                        f"but no 'model' field → DeepSeek API returns 400")
+                    advisory(f"CUSTOM ai-body-missing-model-{os.path.basename(p)}",
+                        "high", False,
+                        f"{os.path.basename(p)}: an AI request body has 'messages' "
+                        "but no inline 'model' field; verify whether the selected "
+                        "provider or proxy supplies a model default")
         except Exception:
             pass
 
@@ -993,7 +1172,7 @@ def audit_app(root, asc):
     #   - Apple Review (UX is not a reject criterion, only crashes are)
     #   - Static linters (no runtime semantics)
     #   - Happy-path QA (testers usually have data)
-    # → Catching it pre-submit is the only place this gets caught early.
+    # → A pre-submit scan provides an early prompt to inspect this UX path.
     #
     # Heuristic: file imports/uses one of the empty-prone APIs AND has a generic
     # `errorMessage = error.localizedDescription` catch with no branch matching
@@ -1029,7 +1208,7 @@ def audit_app(root, asc):
                     bad_empty_catches.append((api_name, os.path.basename(p)))
             except Exception:
                 pass
-    add("CUSTOM empty-state-vs-error-state", "high",
+    advisory("CUSTOM empty-state-vs-error-state", "high",
         not bad_empty_catches,
         f"Files fetching from external sources surface raw error.localizedDescription "
         f"to UI without a 'no-data / not-found' branch. Users see raw codes when the "
@@ -1037,18 +1216,11 @@ def audit_app(root, asc):
         f"`catch let e as CKError where e.code == .unknownItem`. "
         f"Files: {bad_empty_catches[:5]}")
 
-    # CUSTOM N: Release notes text must be ASC-compatible.
-    # Failures observed in production:
-    #   - Any emoji (✅ ⚠️ 🎉 🔧 💡 etc.) → ASC 409 INVALID_CHARACTERS
-    #   - whatsNew >4000 chars → ASC silently truncates / rejects
+    # CUSTOM N: Release-note source length. App Store Connect publishes a
+    # 4,000-character limit for What's New. Emoji are not categorically banned,
+    # so this check intentionally does not reject them.
     # We scan common release-notes file locations: fastlane/metadata/<locale>/release_notes.txt,
     # CHANGELOG.md (latest version block), and any *.txt under metadata/.
-    EMOJI_RE = re.compile(
-        r'[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F000-\U0001F02F'
-        r'\U0001F0A0-\U0001F0FF\U0001F100-\U0001F64F\U0001F680-\U0001F6FF'
-        r'\U0001F700-\U0001F77F\U00002700-\U000027BF\U0001F900-\U0001F9FF]|'
-        r'[✅⚠️ℹ️🎉🔧💡🚀⭐️📱💻🍎🐛🆕🔥]'
-    )
     notes_files: list[str] = []
     for pat in ['fastlane/metadata/*/release_notes.txt',
                 'fastlane/metadata/**/release_notes.txt',
@@ -1066,18 +1238,14 @@ def audit_app(root, asc):
                     text = blocks[1]
                 else:
                     continue
-            emojis = EMOJI_RE.findall(text)
-            if emojis:
-                bad_notes.append(f"{os.path.basename(os.path.dirname(nf))}/{os.path.basename(nf)}: {set(emojis)}")
             if len(text) > 4000:
                 bad_notes.append(f"{os.path.basename(nf)}: {len(text)} chars > 4000")
         except Exception:
             pass
-    add("CUSTOM release-notes-asc-compatible", "high",
+    advisory("CUSTOM release-notes-length", "high",
         not bad_notes,
-        f"Release notes contain characters Apple ASC rejects (`409 INVALID_CHARACTERS`). "
-        f"Common offender: emoji (✅ ⚠️ 🎉). Use plain text + CN punctuation 「」，。 "
-        f"Affected: {bad_notes[:5]}")
+        f"release-note source text may exceed App Store Connect's 4,000-character "
+        f"What's New field limit. Affected: {bad_notes[:5]}")
 
     return results
 
@@ -1087,7 +1255,9 @@ SEV_ICON = {"blocker": "🔴", "high": "⚠️ ", "low": "ℹ️ "}
 
 
 def print_report(name, results, quiet=False):
-    failed = [r for r in results if not r[2]]
+    failed = [r for r in results if r[2] is False]
+    skipped = [r for r in results if r[2] is None]
+    passed = [r for r in results if r[2] is True]
     blockers = [r for r in failed if r[1] == "blocker"]
     if quiet:
         # Only print apps with blockers in quiet mode
@@ -1096,31 +1266,196 @@ def print_report(name, results, quiet=False):
             for rule, sev, ok, msg in blockers:
                 print(f"   {rule}: {msg}")
         return len(blockers)
-    icon = "✅" if not failed else ("🔴" if blockers else "⚠️ ")
-    print(f"\n{icon} {name:20s} [{len(results)-len(failed)}/{len(results)} passed]   blockers={len(blockers)}")
+    if blockers:
+        icon = "🔴"
+    elif failed:
+        icon = "⚠️ "
+    elif skipped:
+        icon = "🟡"
+    else:
+        icon = "✅"
+    print(
+        f"\n{icon} {name:20s} "
+        f"[passed={len(passed)} skipped={len(skipped)} total={len(results)}] "
+        f"blockers={len(blockers)}"
+    )
     for rule, sev, ok, msg in failed:
         print(f"   {SEV_ICON.get(sev, '•')} {rule:42s} {msg}")
     return len(blockers)
 
 
-def json_report(all_results):
+def json_report(all_results, errors=None):
     """Emit machine-readable JSON for CI integration."""
     out = []
     for name, results in all_results.items():
         out.append({
             "app": name,
             "rules": [
-                {"rule": r, "severity": s, "passed": ok, "message": m}
+                {
+                    "rule": r,
+                    "basis": r.partition(" ")[0],
+                    "severity": s,
+                    "passed": ok,
+                    "status": (
+                        "passed" if ok is True
+                        else "failed" if ok is False
+                        else "not_evaluated"
+                    ),
+                    "message": m,
+                }
                 for r, s, ok, m in results
             ],
-            "blockers": sum(1 for r, s, ok, _ in results if not ok and s == "blocker"),
+            "blockers": sum(
+                1 for _r, severity, ok, _message in results
+                if ok is False and severity == "blocker"
+            ),
         })
-    print(json.dumps({"apps": out, "total_blockers": sum(a["blockers"] for a in out)}, indent=2))
+    print(json.dumps({
+        "apps": out,
+        "total_blockers": sum(a["blockers"] for a in out),
+        "errors": errors or [],
+    }, indent=2))
+
+
+def configuration_error(code, message, **context):
+    """Create one stable, machine-readable CLI configuration error."""
+    error = {"code": code, "message": message}
+    error.update(context)
+    return error
+
+
+def exit_with_configuration_errors(errors, json_output=False, all_results=None):
+    """Report configuration errors for humans and JSON consumers, then return 2."""
+    for error in errors:
+        print(f"Configuration error: {error['message']}", file=sys.stderr)
+    if json_output:
+        json_report(all_results or {}, errors=errors)
+    return 2
+
+
+def load_apps(args):
+    """Load, normalize, and validate app definitions without auditing them."""
+    errors = []
+    apps = []
+
+    if args.config and args.project:
+        errors.append(configuration_error(
+            "conflicting_inputs",
+            "use either --project or --config, not both",
+        ))
+        return apps, errors
+
+    if args.config:
+        config_path = Path(args.config).expanduser()
+        try:
+            with config_path.open(encoding="utf-8") as config_file:
+                raw_apps = json.load(config_file)
+        except json.JSONDecodeError as exc:
+            errors.append(configuration_error(
+                "invalid_config_json",
+                f"cannot parse config file '{config_path}': "
+                f"{exc.msg} at line {exc.lineno}, column {exc.colno}",
+                config=str(config_path),
+                line=exc.lineno,
+                column=exc.colno,
+            ))
+            return apps, errors
+        except UnicodeError as exc:
+            errors.append(configuration_error(
+                "invalid_config_encoding",
+                f"cannot decode config file '{config_path}' as UTF-8: {exc}",
+                config=str(config_path),
+            ))
+            return apps, errors
+        except OSError as exc:
+            reason = exc.strerror or type(exc).__name__
+            errors.append(configuration_error(
+                "config_unreadable",
+                f"cannot read config file '{config_path}': {reason}",
+                config=str(config_path),
+            ))
+            return apps, errors
+
+        if not isinstance(raw_apps, list):
+            errors.append(configuration_error(
+                "invalid_config_shape",
+                f"config file '{config_path}' must contain a JSON array",
+                config=str(config_path),
+            ))
+            return apps, errors
+        if not raw_apps:
+            errors.append(configuration_error(
+                "empty_config",
+                f"config file '{config_path}' contains no apps",
+                config=str(config_path),
+            ))
+            return apps, errors
+
+        for index, raw_app in enumerate(raw_apps):
+            entry_number = index + 1
+            if not isinstance(raw_app, dict):
+                errors.append(configuration_error(
+                    "invalid_app_entry",
+                    f"config entry {entry_number} must be a JSON object",
+                    config=str(config_path),
+                    entry=entry_number,
+                ))
+                continue
+
+            project_value = raw_app.get("project")
+            if not isinstance(project_value, str) or not project_value.strip():
+                errors.append(configuration_error(
+                    "missing_project_path",
+                    f"config entry {entry_number} is missing a project path",
+                    config=str(config_path),
+                    entry=entry_number,
+                    app=raw_app.get("name") or "",
+                ))
+                continue
+
+            project_path = Path(project_value).expanduser().resolve()
+            name = raw_app.get("name")
+            if not isinstance(name, str) or not name.strip():
+                name = project_path.name or str(project_path)
+
+            app = dict(raw_app)
+            app.update({"name": name, "project": str(project_path)})
+            apps.append(app)
+    elif args.project:
+        project_path = Path(args.project).expanduser().resolve()
+        name = project_path.name or str(project_path)
+        apps = [{
+            "name": name,
+            "project": str(project_path),
+            "bundle_id": args.bundle_id or "",
+        }]
+    else:
+        errors.append(configuration_error(
+            "missing_input",
+            "provide --project <path> or --config <file.json>",
+        ))
+        return apps, errors
+
+    for index, app in enumerate(apps):
+        project_path = Path(app["project"])
+        if not project_path.is_dir():
+            errors.append(configuration_error(
+                "invalid_project_path",
+                f"project path for '{app['name']}' is not a directory: "
+                f"{project_path}",
+                entry=index + 1,
+                app=app["name"],
+                project=str(project_path),
+            ))
+
+    return apps, errors
 
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 def main():
-    p = argparse.ArgumentParser(description="Apple App Store pre-submit audit (70+ rules)")
+    p = argparse.ArgumentParser(
+        description="Local, evidence-labeled Apple App Store pre-submit audit"
+    )
     p.add_argument("--project", help="Path to Xcode project root")
     p.add_argument("--bundle-id", help="Bundle identifier (for ASC lookup)")
     p.add_argument("--config", help="JSON file with multiple apps to audit")
@@ -1128,30 +1463,66 @@ def main():
     p.add_argument("--issuer-id", default=os.getenv("ASC_ISSUER_ID"))
     p.add_argument("--key-file", default=os.getenv("ASC_KEY_FILE"))
     p.add_argument("--no-asc", action="store_true",
-                   help="Skip App Store Connect fetch (code-only audit, lots of false negatives)")
+                   help="Skip App Store Connect; metadata checks are not evaluated")
     p.add_argument("--quiet", "-q", action="store_true",
                    help="Only print apps with blockers (for CI)")
     p.add_argument("--json", action="store_true",
                    help="Emit JSON output (for CI / scripting)")
     args = p.parse_args()
 
-    apps = []
-    if args.config:
-        with open(args.config) as f:
-            apps = json.load(f)
-    elif args.project:
-        name = Path(args.project).name
-        apps = [{"name": name, "project": args.project, "bundle_id": args.bundle_id or ""}]
-    else:
-        p.error("Provide --project + --bundle-id, or --config <file.json>")
+    apps, errors = load_apps(args)
+    if errors:
+        sys.exit(exit_with_configuration_errors(errors, args.json))
 
     asc_client = None
     if not args.no_asc:
-        if not (args.key_id and args.issuer_id and args.key_file):
-            print("ASC credentials missing (set --key-id/--issuer-id/--key-file or env vars).")
-            print("Use --no-asc to skip ASC fetch (code-only audit).")
-            sys.exit(2)
-        asc_client = ASCClient(args.key_id, args.issuer_id, args.key_file)
+        missing_credentials = [
+            flag for flag, value in (
+                ("--key-id", args.key_id),
+                ("--issuer-id", args.issuer_id),
+                ("--key-file", args.key_file),
+            )
+            if not value
+        ]
+        if missing_credentials:
+            errors.append(configuration_error(
+                "missing_asc_credentials",
+                "missing App Store Connect credentials: "
+                + ", ".join(missing_credentials)
+                + " (or use --no-asc for a code-only audit)",
+                missing=missing_credentials,
+            ))
+
+        for app in apps:
+            if not app.get("bundle_id"):
+                errors.append(configuration_error(
+                    "missing_bundle_id",
+                    f"bundle identifier is missing for '{app['name']}'",
+                    app=app["name"],
+                    project=app["project"],
+                ))
+
+        if args.key_file:
+            args.key_file = str(Path(args.key_file).expanduser())
+
+        if errors:
+            sys.exit(exit_with_configuration_errors(errors, args.json))
+        try:
+            asc_client = ASCClient(
+                args.key_id,
+                args.issuer_id,
+                args.key_file,
+            )
+        except (OSError, UnicodeError) as exc:
+            key_path = Path(args.key_file)
+            reason = getattr(exc, "strerror", None) or type(exc).__name__
+            errors.append(configuration_error(
+                "key_file_unreadable",
+                f"cannot read App Store Connect key file '{key_path}': "
+                f"{reason}",
+                key_file=str(key_path),
+            ))
+            sys.exit(exit_with_configuration_errors(errors, args.json))
 
     total_blockers = 0
     all_results = {}
@@ -1159,17 +1530,35 @@ def main():
         name = app["name"]
         root = app["project"]
         bid = app.get("bundle_id", "")
-        if not os.path.isdir(root):
-            if not args.quiet and not args.json:
-                print(f"⚠️  {name}: project path not found: {root}")
-            continue
         asc_data = {}
         if asc_client and bid:
-            aid = asc_client.app_id_for_bundle(bid)
+            try:
+                aid = asc_client.app_id_for_bundle(bid)
+            except ASCRequestError as exc:
+                errors.append(configuration_error(
+                    exc.code,
+                    str(exc),
+                    app=name,
+                ))
+                continue
             if aid:
-                asc_data = asc_client.fetch_metadata(aid)
-            elif not args.quiet and not args.json:
-                print(f"⚠️  {name}: bundle {bid} not found in ASC")
+                try:
+                    asc_data = asc_client.fetch_metadata(aid)
+                except ASCRequestError as exc:
+                    errors.append(configuration_error(
+                        exc.code,
+                        str(exc),
+                        app=name,
+                    ))
+                    continue
+            else:
+                errors.append(configuration_error(
+                    "asc_app_not_found",
+                    f"App Store Connect has no app matching the bundle "
+                    f"identifier configured for '{name}'",
+                    app=name,
+                ))
+                continue
         asc_data.update({
             k: v for k, v in app.items()
             if k not in ("name", "project", "bundle_id")
@@ -1179,10 +1568,20 @@ def main():
         if not args.json:
             total_blockers += print_report(name, results, quiet=args.quiet)
 
+    if errors:
+        sys.exit(exit_with_configuration_errors(
+            errors,
+            args.json,
+            all_results=all_results,
+        ))
+
     if args.json:
         json_report(all_results)
         total_blockers = sum(
-            sum(1 for _, sev, ok, _ in rs if not ok and sev == "blocker")
+            sum(
+                1 for _rule, severity, ok, _message in rs
+                if ok is False and severity == "blocker"
+            )
             for rs in all_results.values()
         )
     elif not args.quiet:

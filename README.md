@@ -1,139 +1,181 @@
 # Apple App Store Pre-Submit Audit
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
-![Rules: 71+](https://img.shields.io/badge/rules-71+-success)
-![Lessons: 50+ rejections](https://img.shields.io/badge/distilled%20from-50%2B%20real%20rejections-orange)
+[![Tests](https://github.com/XJM-free/apple-presubmit-audit/actions/workflows/tests.yml/badge.svg)](https://github.com/XJM-free/apple-presubmit-audit/actions/workflows/tests.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](https://www.python.org/downloads/)
+[![MIT License](https://img.shields.io/badge/license-MIT-2ea44f.svg)](./LICENSE)
 
-> **70+ static checks codifying ~50 real Apple App Store rejections** across one indie developer's submission history.
-> Catches preventable mistakes — plist mismatches, missing "auto-renewing" CTAs, declared-but-unused permissions, paywall-benefit lies, SwiftData migration crashes — **before you hit Submit**.
->
-> Maintained by an indie dev who has shipped [53 iOS apps](https://github.com/XJM-free/iOS-apps-portfolio). Each new rule maps to a specific rejection that cost a week of resubmission.
+A local Python CLI that surfaces potential App Store submission issues before
+review: inconsistent metadata, unused permission declarations, incomplete
+subscription disclosures, suspicious entitlement state, and project-specific
+release risks.
 
-## Why this exists
+It is a preflight assistant, not an App Review guarantee. The checks combine
+[Apple's published guidelines](https://developer.apple.com/app-store/review/guidelines/)
+with conservative, submission-derived heuristics.
 
-Every App Store rejection is a strike on your account. Stack enough strikes and Apple silently raises your review bar. This tool helps independent developers **stay compliant** — it is a quality gate, not a workaround. If your app design genuinely violates a guideline, fix the design; this script only catches the mechanical mistakes (typos, forgot a key, missing disclosure) that cause most preventable rejections.
-
-If you're an indie shipping carefully, this saves you days. If you're trying to mass-produce shovelware, this tool will not help you and Apple's 4.3 Spam policy will catch you regardless.
-
+```text
+🔴 MyApp                [passed=24 skipped=0 total=27] blockers=1
+   🔴 OFFICIAL 2.3.7 name-length          App Store name too long (34 chars, max 30)
+   ⚠️  ADVISORY 3.1.2(c) renewal-disclosure-copy
+                                              Heuristic: verify that price, duration,
+                                              and renewal terms are clear
+   ℹ️  ADVISORY 4.2 minimum-functionality-shape
+                                              Heuristic: file counts do not determine
+                                              compliance; review the experience
 ```
-🔴 MyApp                [22/27 passed]   blockers=2
-   🔴 2.3.8 plist-name-matches-asc        Info.plist 'MyApp' != ASC name 'MyAwesome - Tracker'
-   🔴 3.1.2(c) auto-renewing-CTA          subscribe button must say 'auto-renewing'
-   ⚠️  4.3 unique-views-anti-spam          need ≥3 unique custom views, has 2
-```
 
-## What it doesn't do
+The output above is illustrative.
 
-- Doesn't make a low-effort app pass review (Apple's reviewers are humans and will spot it)
-- Doesn't bypass any guideline (every rule here is a guideline restated mechanically)
-- Doesn't replace careful design, testing, or honest description writing
+## What it checks
 
-## What it checks (70+ rules across 5 categories + custom)
+The audit combines a baseline rule set with condition-aware checks across
+Apple's five review categories and additional engineering checks.
 
-| Category | Sample checks |
+- A baseline set runs for every project; metadata-only findings are treated as
+  `not_evaluated` when `--no-asc` supplies no corresponding field.
+- Extra checks activate when the project declares permissions, subscriptions,
+  accounts, third-party login, CloudKit, AI APIs, a paywall, or other relevant
+  features.
+- A synthetic coverage fixture exercises the broad conditional catalog; a
+  normal project runs only the checks relevant to the signals it exposes.
+
+| Area | Examples |
 |---|---|
-| **1. Safety** | fake/prank content, false medical claims, Support URL present |
-| **2. Performance** | description completeness, audio/AI promises have implementation, Notes ≥200 chars, name length ≤30, **plist CFBundleDisplayName matches ASC name**, no competing-platform mentions, every `NSXxxUsageDescription` has matching framework code |
-| **3. Business** | trial disclosure complete, "auto-renewing" CTA, price 36pt heavy, Restore button, Privacy + Terms links in paywall, EULA in description, no forced rating |
-| **4. Design** | minimum functionality, ≥3 unique custom views (4.3 Spam protection), Sign in with Apple if 3rd-party login |
-| **5. Legal** | Privacy Policy in app + ASC, account deletion UI if account, gambling=NONE for individuals, no banking/blood-pressure/casino keywords |
-| **Custom (real rejection lessons)** | Detector/Meter apps must say "no external hardware", health keyword without HealthKit warning, subscription state ready, all locales have Support URL |
+| Safety | misleading sensor or medical claims, Kids Category advertising |
+| Performance | metadata completeness, app-name length, implementation evidence for advertised features |
+| Business | subscription disclosure, restore flow, privacy and terms links, purchase-price prominence |
+| Design | minimum-functionality and duplicate-app heuristics, Sign in with Apple |
+| Legal | privacy policy, account deletion, permissions matched to framework use |
+| Custom | StoreKit state, CloudKit save patterns, SwiftData defaults, paywall claims matched to code |
 
-Full rule list in [audit.py](./audit.py) — every rule cites its Apple Guideline number.
+See [`audit.py`](./audit.py) for the implementation of every check.
 
 ## Quick start
 
 ```bash
-pip install requests pyjwt cryptography
+git clone https://github.com/XJM-free/apple-presubmit-audit.git
+cd apple-presubmit-audit
 
-# Audit a single app:
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+```
+
+Audit one project against App Store Connect metadata:
+
+```bash
 python3 audit.py \
-  --project ~/MyApp \
+  --project ~/Code/MyApp \
   --bundle-id com.example.myapp \
   --key-id ABC123XYZ \
   --issuer-id 12345-67890-... \
   --key-file ~/AuthKey_ABC123XYZ.p8
+```
 
-# Or via env vars:
+The credentials can also come from environment variables:
+
+```bash
 export ASC_KEY_ID=ABC123XYZ
 export ASC_ISSUER_ID=12345-67890-...
 export ASC_KEY_FILE=~/AuthKey_ABC123XYZ.p8
-python3 audit.py --project ~/MyApp --bundle-id com.example.myapp
 
-# Code-only audit (no ASC fetch — many false negatives):
-python3 audit.py --project ~/MyApp --no-asc
+python3 audit.py --project ~/Code/MyApp --bundle-id com.example.myapp
+```
 
-# Multiple apps from config file:
+Code-only mode skips App Store Connect. It is useful for local iteration, but
+metadata-dependent checks will not have enough information:
+
+```bash
+python3 audit.py --project ~/Code/MyApp --no-asc
+```
+
+For several apps, copy [`apps.example.json`](./apps.example.json) to `apps.json`
+and run:
+
+```bash
 python3 audit.py --config apps.json
-
-# CI-friendly: only print blockers, exit 1 on failure
 python3 audit.py --config apps.json --quiet
-
-# JSON output for scripting:
 python3 audit.py --config apps.json --json
 ```
 
-`apps.json` format:
-
-```json
-[
-  {"name": "MyApp1", "project": "/path/to/MyApp1", "bundle_id": "com.example.app1"},
-  {"name": "MyApp2", "project": "/path/to/MyApp2", "bundle_id": "com.example.app2"}
-]
-```
+Never commit App Store Connect credentials. This repository ignores common
+private-key, provisioning-profile, environment, and local app-config files by
+default.
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
-| `0` | All checks pass — safe to submit |
-| `1` | One or more **blockers** failed — do NOT submit |
-| `2` | Config / credentials error |
+| `0` | No blocker was detected among the checks that ran |
+| `1` | One or more blocker checks failed |
+| `2` | Project/config input is invalid, or App Store Connect data could not be fetched safely |
 
-Use exit code `1` to gate your CI submit step:
+Do not treat exit code `0` as proof that Apple will approve an app.
 
-```bash
-python3 audit.py --config apps.json && fastlane submit
-```
+Configuration failures are written to stderr. With `--json`, stdout remains
+valid JSON and includes an `errors` array, so CI callers can distinguish invalid
+input from review findings.
 
-## Get an ASC API key
+In JSON output, `passed` is `true`, `false`, or `null`; `null` is paired with
+`"status": "not_evaluated"` and is never counted as a blocker.
 
-App Store Connect → Users and Access → Keys → "+" → role **App Manager**. Save the `.p8` file (you can only download it once). The `Key ID` and `Issuer ID` show on the same page.
+## How to read the findings
 
-## How the rules were learned
+Every rule ID starts with its evidence basis:
 
-Each rule maps to an actual rejection pattern observed in indie apps. A few generalized examples:
+- `OFFICIAL` — directly validates a field or limit published by Apple, such as
+  the [30-character app-name limit](https://developer.apple.com/app-store/review/guidelines/#accurate-metadata),
+  a required
+  [Support URL](https://developer.apple.com/help/app-store-connect/reference/app-information/platform-version-information/),
+  or a published
+  [age-rating value](https://developer.apple.com/documentation/appstoreconnectapi/appstoreagerating).
+- `READINESS` — directly observes a submission or StoreKit catalog state that
+  can prevent the intended release or purchase flow.
+- `ADVISORY` — a regex, keyword, typography, file-count, or submission-derived
+  heuristic. It is evidence to inspect, not proof of an Apple violation.
 
-- **2.3.8 plist-name-matches-asc** — Renamed an app in App Store Connect after submitting the binary, forgot to update `CFBundleDisplayName`. Apple rejected on next submit (and the one after). Easy to forget, easy to grep.
-- **2.5.1 NSHealthShareUsageDescription** — Declared `NSHealthShareUsageDescription` in `Info.plist` "just in case", never actually imported `HealthKit`. Apple rejected: a permission string with no matching framework code looks deceptive.
-- **CUSTOM detector-no-hardware-disclaimer** — Magnetometer-based app described as "metal detector". Apple's reviewer assumed it needed an MFi accessory and asked for a hardware demo video. Adding "100% software, uses iPhone built-in magnetometer" to the first sentence resolved it.
-- **3.1.2(c) auto-renewing-CTA** — Subscribe button said "Subscribe — $9.99/yr" instead of "Subscribe — $9.99/yr **auto-renewing**". One missing word in the CTA text is enough to trigger this rejection.
+Apple does not publish a 200-character minimum for review notes, a 36-point
+price-font rule, a minimum number of SwiftUI views, or a mandatory literal
+`auto-renewing` CTA phrase. Those checks are therefore labeled `ADVISORY`.
+
+Treat findings as prompts for review:
+
+1. Confirm the relevant guideline and current App Store Connect requirements.
+2. Inspect the matched code or metadata.
+3. Fix real issues and dismiss false positives with project context.
+
+Severity describes release impact:
+
+- `blocker` — reserved for `OFFICIAL` or directly observed `READINESS` findings.
+- `high` — a significant manual-review prompt.
+- `low` — a lower-confidence or product-quality prompt.
+
+`ADVISORY` findings are enforced in code and tests to never use `blocker`
+severity or hard-requirement wording.
 
 ## Limitations
 
-- Code grep is heuristic — false positives possible (e.g., the rule for `import HealthKit` won't catch dynamically-loaded frameworks).
-- Some rules need the actual binary or screenshots to verify (e.g., 2.3.3 mockup screenshots, 2.4.5 unused background modes). Those rules are skipped.
-- ASC API doesn't expose every metadata field (e.g., screenshot localization status). You still need a manual final review.
-- Catches the things humans miss; doesn't replace careful design.
+- Swift and plist inspection is regex-based; generated code and dynamic framework
+  loading can produce false negatives.
+- Some checks are deliberately conservative and can produce false positives.
+- The tool does not inspect the final signed binary or screenshots.
+- App Store Connect does not expose every review field through its API.
+- Apple can change its guidelines and reviewer behavior independently of this
+  repository.
 
-## Contributing
+Always perform a manual final review.
 
-PRs welcome — especially new rules from your own rejection history. Format:
+## Development
 
-```python
-add("CATEGORY.SECTION rule-id", "blocker|high|low",
-    <bool: true if passing>,
-    "human-readable failure message")
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m py_compile audit.py
 ```
 
-Add a comment citing the rejection that motivated the rule.
-
-## Contact
-
-Issues, PRs, or feedback: open a [GitHub issue](https://github.com/XJM-free/apple-presubmit-audit/issues) or email **jie.xiang.jm@gmail.com**.
+Contributions are welcome. Read [`CONTRIBUTING.md`](./CONTRIBUTING.md) before
+adding a rule, and include both a triggering fixture and a non-triggering
+fixture when possible.
 
 ## License
 
-MIT. Use it, fork it, ship it.
+[MIT](./LICENSE)

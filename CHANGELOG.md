@@ -1,5 +1,61 @@
 # Changelog
 
+> Entries below `Unreleased` preserve the behavior and terminology of their
+> original release. They are historical records, not current App Store guidance;
+> later corrections and the current README/source take precedence.
+
+## [Unreleased]
+
+### Added
+
+- Standard-library regression tests for the baseline and conditional rule sets.
+- GitHub Actions coverage on Python 3.10 and 3.14.
+- A dependency manifest for local setup and CI.
+- Explicit `OFFICIAL`, `READINESS`, and `ADVISORY` evidence labels on every
+  emitted rule, with a runtime and test invariant that advisories never block.
+- Sanitized, structured failures for App Store Connect authentication, network,
+  rate-limit, HTTP, and response-format errors.
+- Explicit `not_evaluated` results for metadata checks in `--no-asc` mode,
+  instead of reporting unavailable metadata as passed.
+
+### Changed
+
+- Documented Python 3.10 as the supported minimum.
+- Clarified that the catalog includes condition-triggered heuristic families and
+  that metadata-only findings are not failures in `--no-asc` mode.
+- Clarified severity language and the limits of CI exit codes.
+- Reclassified regex, keyword, file-count, typography, and rejection-derived
+  checks as non-blocking advisories, even when they help inspect an official
+  guideline.
+- Replaced the fixed `auto-renewing` CTA assertion with a renewal-disclosure
+  advisory; Apple asks for clear subscription information but does not prescribe
+  that literal CTA phrase.
+- Replaced the 36-point price assertion, 200-character review-note assertion,
+  exact plist/ASC-name assertion, and minimum-view thresholds with clearly
+  labeled advisories.
+- Updated accepted App Store age-rating values to the current published
+  `AppStoreAgeRating` enumeration, including 13+, 16+, and 18+.
+- Limited the release-notes advisory to Apple's published 4,000-character
+  What's New limit; emoji are no longer treated as categorically invalid.
+- Changed URL HEAD probes and static account/privacy/StoreKit/CloudKit scans
+  from blockers to advisories because those probes cannot prove a violation.
+- Updated first-IAP guidance to Apple's
+  [current submission workflow](https://developer.apple.com/help/app-store-connect/manage-submissions-to-app-review/submit-an-in-app-purchase/):
+  direct submissions are supported, while the first item of each type is
+  submitted with a new app version.
+
+### Fixed
+
+- Made missing, non-directory, unreadable, and malformed CLI inputs fail
+  consistently with exit code 2 and structured `--json` errors.
+- Resolved project paths before deriving report names, so `--project .` no
+  longer produces a blank app name.
+- Added retry and timeout handling for App Store Connect requests.
+- Reduced false positives in permission, paywall-benefit, legal-link, and custom
+  view detection.
+- Allowed batch-config entries to provide metadata overrides for reproducible
+  offline audits.
+
 ## [0.5.2] - 2026-04-24
 
 ### Added — `release-notes-asc-compatible` (1 new rule)

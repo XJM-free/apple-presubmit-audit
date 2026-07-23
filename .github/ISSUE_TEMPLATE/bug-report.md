@@ -17,6 +17,9 @@ python3 audit.py ...
 
 ## Output
 
+Redact credentials, account identifiers, local paths, customer data, and
+proprietary source before pasting output.
+
 ```
 (paste the output)
 ```
