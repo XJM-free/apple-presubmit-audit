@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -135,6 +136,150 @@ class AuditRuleTests(unittest.TestCase):
         self.assertEqual("invalid_project_path", report["errors"][0]["code"])
         self.assertIn("Configuration error:", result.stderr)
 
+    def test_sarif_output_maps_failed_findings_and_preserves_blocker_exit(self):
+        with tempfile.TemporaryDirectory(
+            prefix="Fixture # 名称 ",
+            dir=REPO_ROOT,
+        ) as tmp:
+            root = Path(tmp)
+            project_file = root / "Fixture.xcodeproj" / "project.pbxproj"
+            project_file.parent.mkdir()
+            project_file.write_text("// synthetic project\n", encoding="utf-8")
+            project_uri = urllib.parse.quote(
+                project_file.relative_to(REPO_ROOT).as_posix(),
+                safe="/",
+            )
+            config = root / "apps.json"
+            config.write_text(json.dumps([{
+                "name": "Fixture",
+                "project": str(root),
+                "bundle_id": "com.example.fixture",
+                "description": "",
+            }]), encoding="utf-8")
+
+            result = self._run_cli(
+                "--config",
+                str(config),
+                "--no-asc",
+                "--sarif",
+                cwd=REPO_ROOT,
+            )
+
+        self.assertEqual(1, result.returncode)
+        report = json.loads(result.stdout)
+        self.assertEqual("2.1.0", report["version"])
+        self.assertEqual(
+            "https://json.schemastore.org/sarif-2.1.0.json",
+            report["$schema"],
+        )
+
+        run = report["runs"][0]
+        self.assertEqual("apple-presubmit-audit", run["tool"]["driver"]["name"])
+        self.assertTrue(run["invocations"][0]["executionSuccessful"])
+        self.assertEqual(1, run["invocations"][0]["exitCode"])
+
+        findings = {
+            finding["ruleId"]: finding
+            for finding in run["results"]
+        }
+        blocker = findings["OFFICIAL 2.1 description-present"]
+        self.assertEqual("error", blocker["level"])
+        self.assertEqual("Fixture", blocker["properties"]["app"])
+        self.assertEqual("OFFICIAL", blocker["properties"]["basis"])
+        fingerprint = blocker["partialFingerprints"][
+            "applePresubmitAudit/v1"
+        ]
+        self.assertRegex(fingerprint, r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            project_uri,
+            blocker["locations"][0]["physicalLocation"][
+                "artifactLocation"
+            ]["uri"],
+        )
+        self.assertEqual(
+            "project-anchor",
+            blocker["properties"]["locationKind"],
+        )
+
+        rule_ids = {
+            rule["id"] for rule in run["tool"]["driver"]["rules"]
+        }
+        self.assertTrue(set(findings).issubset(rule_ids))
+        self.assertGreater(len(rule_ids), len(findings))
+
+    def test_sarif_fingerprint_uses_durable_app_identity(self):
+        results = {
+            "Old Display Name": [
+                (
+                    "OFFICIAL 2.1 description-present",
+                    "blocker",
+                    False,
+                    "missing",
+                ),
+            ],
+        }
+        renamed_results = {"New Display Name": results["Old Display Name"]}
+        old_report = audit.sarif_document(
+            results,
+            app_contexts={
+                "Old Display Name": {
+                    "bundle_id": "com.example.fixture",
+                },
+            },
+        )
+        renamed_report = audit.sarif_document(
+            renamed_results,
+            app_contexts={
+                "New Display Name": {
+                    "bundle_id": "com.example.fixture",
+                },
+            },
+        )
+
+        fingerprint_key = "applePresubmitAudit/v1"
+        self.assertEqual(
+            old_report["runs"][0]["results"][0]["partialFingerprints"][
+                fingerprint_key
+            ],
+            renamed_report["runs"][0]["results"][0]["partialFingerprints"][
+                fingerprint_key
+            ],
+        )
+
+    def test_sarif_configuration_error_is_a_tool_notification(self):
+        result = self._run_cli(
+            "--project",
+            "/tmp/apple-presubmit-audit-path-that-does-not-exist",
+            "--no-asc",
+            "--sarif",
+        )
+
+        self.assertEqual(2, result.returncode)
+        report = json.loads(result.stdout)
+        invocation = report["runs"][0]["invocations"][0]
+        self.assertFalse(invocation["executionSuccessful"])
+        self.assertEqual(2, invocation["exitCode"])
+        self.assertEqual(
+            "invalid_project_path",
+            invocation["toolExecutionNotifications"][0]["descriptor"]["id"],
+        )
+        self.assertEqual([], report["runs"][0]["results"])
+        self.assertIn("Configuration error:", result.stderr)
+
+    def test_json_and_sarif_are_mutually_exclusive(self):
+        result = self._run_cli(
+            "--project",
+            ".",
+            "--no-asc",
+            "--json",
+            "--sarif",
+            cwd=REPO_ROOT,
+        )
+
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("not allowed with argument", result.stderr)
+
     def test_config_rejects_missing_and_non_directory_project_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -168,6 +313,38 @@ class AuditRuleTests(unittest.TestCase):
             [error["code"] for error in report["errors"]],
         )
         self.assertEqual(2, result.stderr.count("Configuration error:"))
+
+    def test_config_rejects_duplicate_app_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_project = root / "First"
+            second_project = root / "Second"
+            first_project.mkdir()
+            second_project.mkdir()
+            config = root / "apps.json"
+            config.write_text(json.dumps([
+                {
+                    "name": "Duplicate",
+                    "project": str(first_project),
+                },
+                {
+                    "name": "Duplicate",
+                    "project": str(second_project),
+                },
+            ]), encoding="utf-8")
+
+            result = self._run_cli(
+                "--config",
+                str(config),
+                "--no-asc",
+                "--json",
+            )
+
+        self.assertEqual(2, result.returncode)
+        report = json.loads(result.stdout)
+        self.assertEqual("duplicate_app_name", report["errors"][0]["code"])
+        self.assertEqual(1, report["errors"][0]["first_entry"])
+        self.assertIn("app names must be unique", result.stderr)
 
     def test_invalid_config_json_reports_parse_location_and_exit_two(self):
         with tempfile.TemporaryDirectory() as tmp:
