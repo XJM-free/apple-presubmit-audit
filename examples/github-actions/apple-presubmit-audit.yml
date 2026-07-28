@@ -1,0 +1,78 @@
+name: Apple presubmit audit
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  audit:
+    name: Audit and upload SARIF
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Fetch the pinned audit tool
+        env:
+          AUDIT_COMMIT: ff73eeb5ee2463e400f7649df6a25758ee60ee80
+          AUDIT_TOOL_DIR: ${{ runner.temp }}/apple-presubmit-audit
+        run: |
+          git init "$AUDIT_TOOL_DIR"
+          git -C "$AUDIT_TOOL_DIR" remote add origin \
+            https://github.com/XJM-free/apple-presubmit-audit.git
+          git -C "$AUDIT_TOOL_DIR" fetch --depth=1 origin "$AUDIT_COMMIT"
+          git -C "$AUDIT_TOOL_DIR" checkout --detach "$AUDIT_COMMIT"
+
+      - name: Install audit dependencies
+        env:
+          AUDIT_TOOL_DIR: ${{ runner.temp }}/apple-presubmit-audit
+        run: >-
+          python -m pip install --disable-pip-version-check
+          --requirement "$AUDIT_TOOL_DIR/requirements.txt"
+
+      - name: Run Apple pre-submit audit
+        id: audit
+        env:
+          AUDIT_TOOL_DIR: ${{ runner.temp }}/apple-presubmit-audit
+          SARIF_FILE: ${{ runner.temp }}/apple-presubmit-audit.sarif
+        run: |
+          set +e
+          python "$AUDIT_TOOL_DIR/audit.py" \
+            --project "$GITHUB_WORKSPACE" \
+            --no-asc \
+            --sarif > "$SARIF_FILE"
+          audit_exit_code=$?
+          set -e
+
+          echo "sarif_file=$SARIF_FILE" >> "$GITHUB_OUTPUT"
+          echo "exit_code=$audit_exit_code" >> "$GITHUB_OUTPUT"
+
+      - name: Upload SARIF
+        if: ${{ always() && steps.audit.outputs.sarif_file != '' }}
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+        with:
+          sarif_file: ${{ steps.audit.outputs.sarif_file }}
+          category: apple-presubmit-audit
+
+      - name: Preserve audit exit status
+        if: ${{ always() && steps.audit.outputs.exit_code != '' && steps.audit.outputs.exit_code != '0' }}
+        env:
+          AUDIT_EXIT_CODE: ${{ steps.audit.outputs.exit_code }}
+        run: |
+          echo "::error::Apple pre-submit audit exited with status $AUDIT_EXIT_CODE"
+          exit "$AUDIT_EXIT_CODE"

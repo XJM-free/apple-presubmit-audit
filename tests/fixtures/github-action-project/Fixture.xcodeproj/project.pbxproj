@@ -1,0 +1,1 @@
+// Minimal synthetic Xcode project used by the GitHub Actions contract test.

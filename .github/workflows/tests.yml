@@ -38,4 +38,4 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Compile Python sources
-        run: python -m py_compile audit.py tests/test_audit.py
+        run: python -m py_compile audit.py tests/test_audit.py tests/test_github_action.py

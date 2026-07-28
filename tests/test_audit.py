@@ -407,7 +407,7 @@ class AuditRuleTests(unittest.TestCase):
 
         self.assertEqual(0, result.returncode)
         report = json.loads(result.stdout)
-        self.assertEqual("apple-presubmit-audit", report["apps"][0]["app"])
+        self.assertEqual(REPO_ROOT.name, report["apps"][0]["app"])
         self.assertEqual([], report["errors"])
         self.assertEqual(0, report["total_blockers"])
         self.assertTrue(all(

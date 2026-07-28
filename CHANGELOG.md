@@ -20,6 +20,8 @@
 - SARIF 2.1.0 output via `--sarif`, including stable rule IDs, severity levels,
   durable app fingerprints, project-anchor locations, and structured
   configuration-error notifications.
+- A credential-free composite GitHub Action and copyable, SHA-pinned workflow
+  that upload SARIF before preserving audit exit status.
 
 ### Changed
 

@@ -1,0 +1,101 @@
+name: Apple Presubmit Audit
+description: Run a credential-free Apple App Store pre-submit audit and upload SARIF.
+author: XJM-free
+
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  project_path:
+    description: Repository-relative path to the Apple project root.
+    required: false
+    default: "."
+  config_path:
+    description: Optional repository-relative batch config; overrides project_path.
+    required: false
+    default: ""
+  python_version:
+    description: Python version used to run the audit.
+    required: false
+    default: "3.11"
+  sarif_file:
+    description: Report path; relative paths are written under the runner temp directory.
+    required: false
+    default: "apple-presubmit-audit.sarif"
+  category:
+    description: GitHub Code Scanning category for this SARIF run.
+    required: false
+    default: "apple-presubmit-audit"
+
+outputs:
+  sarif_file:
+    description: Absolute path to the generated SARIF report.
+    value: ${{ steps.audit.outputs.sarif_file }}
+  exit_code:
+    description: Audit exit code (0 clean, 1 blockers, 2 configuration error).
+    value: ${{ steps.audit.outputs.exit_code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: ${{ inputs.python_version }}
+        cache: pip
+        cache-dependency-path: ${{ github.action_path }}/requirements.txt
+
+    - name: Install audit dependencies
+      shell: bash
+      run: >-
+        python -m pip install --disable-pip-version-check
+        --requirement "$GITHUB_ACTION_PATH/requirements.txt"
+
+    - name: Run Apple pre-submit audit
+      id: audit
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        INPUT_CONFIG_PATH: ${{ inputs.config_path }}
+        INPUT_PROJECT_PATH: ${{ inputs.project_path }}
+        INPUT_SARIF_FILE: ${{ inputs.sarif_file }}
+      run: |
+        set -u
+
+        report_path="$INPUT_SARIF_FILE"
+        if [[ "$report_path" != /* ]]; then
+          report_path="$RUNNER_TEMP/$report_path"
+        fi
+        mkdir -p "$(dirname "$report_path")"
+
+        audit_args=(--no-asc --sarif)
+        if [[ -n "$INPUT_CONFIG_PATH" ]]; then
+          audit_args+=(--config "$INPUT_CONFIG_PATH")
+        else
+          audit_args+=(--project "$INPUT_PROJECT_PATH")
+        fi
+
+        set +e
+        python "$GITHUB_ACTION_PATH/audit.py" "${audit_args[@]}" > "$report_path"
+        audit_exit_code=$?
+        set -e
+
+        echo "sarif_file=$report_path" >> "$GITHUB_OUTPUT"
+        echo "exit_code=$audit_exit_code" >> "$GITHUB_OUTPUT"
+
+    - name: Upload SARIF
+      if: ${{ always() && steps.audit.outputs.sarif_file != '' }}
+      uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+      with:
+        sarif_file: ${{ steps.audit.outputs.sarif_file }}
+        category: ${{ inputs.category }}
+
+    - name: Preserve audit exit status
+      if: ${{ always() && steps.audit.outputs.exit_code != '' && steps.audit.outputs.exit_code != '0' }}
+      shell: bash
+      env:
+        AUDIT_EXIT_CODE: ${{ steps.audit.outputs.exit_code }}
+      run: |
+        echo "::error::Apple pre-submit audit exited with status $AUDIT_EXIT_CODE"
+        exit "$AUDIT_EXIT_CODE"
