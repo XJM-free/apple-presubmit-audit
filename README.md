@@ -103,6 +103,39 @@ Never commit App Store Connect credentials. This repository ignores common
 private-key, provisioning-profile, environment, and local app-config files by
 default.
 
+## GitHub Code Scanning in five minutes
+
+Copy
+[`examples/github-actions/apple-presubmit-audit.yml`](./examples/github-actions/apple-presubmit-audit.yml)
+to `.github/workflows/apple-presubmit-audit.yml` in an Apple project. The
+workflow pins every third-party action and the audit source to full commit
+SHAs, runs without App Store Connect credentials, uploads SARIF, and then
+preserves the CLI exit code.
+
+The repository also exposes a composite action for shorter workflows. Pin it
+to the full commit SHA of a release rather than a mutable branch or tag:
+
+```yaml
+permissions:
+  contents: read
+  security-events: write
+
+steps:
+  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  - uses: XJM-free/apple-presubmit-audit@FULL_RELEASE_COMMIT_SHA
+```
+
+Both integrations deliberately use `--no-asc`: no issuer ID, key ID, or private
+key is read. Metadata-only checks therefore report `not_evaluated`. For
+repeatable offline metadata checks, pass `config_path` to the composite action
+and keep non-secret field overrides in the config.
+
+The audit always writes SARIF before returning its status. GitHub Code Scanning
+receives the report first; the job then succeeds for exit `0`, fails for
+blockers with exit `1`, or fails for invalid input with exit `2`. Public
+repositories can use Code Scanning without an Advanced Security license;
+private repositories need Code Security enabled for SARIF uploads.
+
 ## Exit codes
 
 | Code | Meaning |
