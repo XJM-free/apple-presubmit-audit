@@ -17,6 +17,9 @@
   rate-limit, HTTP, and response-format errors.
 - Explicit `not_evaluated` results for metadata checks in `--no-asc` mode,
   instead of reporting unavailable metadata as passed.
+- SARIF 2.1.0 output via `--sarif`, including stable rule IDs, severity levels,
+  durable app fingerprints, project-anchor locations, and structured
+  configuration-error notifications.
 
 ### Changed
 
@@ -55,6 +58,8 @@
   view detection.
 - Allowed batch-config entries to provide metadata overrides for reproducible
   offline audits.
+- Rejected duplicate app names in batch configs instead of silently replacing
+  an earlier app's results.
 
 ## [0.5.2] - 2026-04-24
 

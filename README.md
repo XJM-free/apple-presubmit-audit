@@ -96,6 +96,7 @@ and run:
 python3 audit.py --config apps.json
 python3 audit.py --config apps.json --quiet
 python3 audit.py --config apps.json --json
+python3 audit.py --config apps.json --sarif > audit.sarif
 ```
 
 Never commit App Store Connect credentials. This repository ignores common
@@ -118,6 +119,16 @@ input from review findings.
 
 In JSON output, `passed` is `true`, `false`, or `null`; `null` is paired with
 `"status": "not_evaluated"` and is never counted as a blocker.
+
+`--sarif` emits SARIF 2.1.0 while preserving the same exit codes. Failed
+findings become results (`blocker` → `error`, `high` → `warning`, `low` →
+`note`); passed and `not_evaluated` rules are omitted. Configuration failures
+become tool execution notifications. Run the command from the repository root
+when uploading the report to GitHub Code Scanning. Because most checks combine
+project-wide code and App Store Connect metadata, SARIF locations point to a
+real project file as an explicitly labeled audit anchor, not an exact match
+line. If no safe repository-relative project file exists, the finding remains
+locationless instead of exposing an absolute local path.
 
 ## How to read the findings
 

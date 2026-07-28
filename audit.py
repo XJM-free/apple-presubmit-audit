@@ -25,12 +25,14 @@ Read more: https://github.com/XJM-free/apple-presubmit-audit
 import argparse
 import base64
 import glob
+import hashlib
 import json
 import os
 import re
 import ssl
 import sys
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -1252,6 +1254,10 @@ def audit_app(root, asc):
 
 # ─── Reporting ────────────────────────────────────────────────────────────────
 SEV_ICON = {"blocker": "🔴", "high": "⚠️ ", "low": "ℹ️ "}
+SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
+SARIF_VERSION = "2.1.0"
+TOOL_NAME = "apple-presubmit-audit"
+TOOL_URL = "https://github.com/XJM-free/apple-presubmit-audit"
 
 
 def print_report(name, results, quiet=False):
@@ -1317,6 +1323,201 @@ def json_report(all_results, errors=None):
     }, indent=2))
 
 
+def sarif_project_reference(project):
+    """Return a stable, non-absolute project reference for fingerprints."""
+    if not project:
+        return None
+    project_path = Path(project).resolve()
+    try:
+        relative = project_path.relative_to(Path.cwd().resolve())
+    except ValueError:
+        return project_path.name or None
+    return relative.as_posix() or "."
+
+
+def sarif_project_anchor(project):
+    """Find a real repository-relative file to anchor project-level findings."""
+    if not project:
+        return None
+    project_path = Path(project).resolve()
+    working_directory = Path.cwd().resolve()
+    try:
+        project_path.relative_to(working_directory)
+    except ValueError:
+        return None
+
+    patterns = (
+        "*.xcodeproj/project.pbxproj",
+        "Info.plist",
+        "Package.swift",
+        "*.swift",
+    )
+    for pattern in patterns:
+        for candidate in sorted(project_path.rglob(pattern)):
+            excluded = {"build", "Build", ".build"}
+            relative_parts = candidate.relative_to(project_path).parts
+            if (
+                candidate.is_file()
+                and not excluded.intersection(relative_parts)
+                and not any(
+                    part.endswith(".xcarchive")
+                    for part in relative_parts
+                )
+            ):
+                relative_uri = candidate.relative_to(
+                    working_directory
+                ).as_posix()
+                return urllib.parse.quote(relative_uri, safe="/")
+    return None
+
+
+def sarif_document(all_results, errors=None, app_contexts=None):
+    """Build a SARIF 2.1.0 log from failed audit findings."""
+    errors = errors or []
+    app_contexts = app_contexts or {}
+    rules = []
+    rule_indexes = {}
+    findings = []
+    blocker_count = 0
+
+    for app, results in all_results.items():
+        app_context = app_contexts.get(app, {})
+        project_reference = sarif_project_reference(app_context.get("project"))
+        app_identity = (
+            app_context.get("bundle_id")
+            or project_reference
+            or app
+        )
+        project_anchor = sarif_project_anchor(app_context.get("project"))
+        for rule, severity, ok, message in results:
+            level = {
+                "blocker": "error",
+                "high": "warning",
+                "low": "note",
+            }.get(severity, "warning")
+            problem_severity = {
+                "blocker": "error",
+                "high": "warning",
+                "low": "recommendation",
+            }.get(severity, "warning")
+            basis = rule.partition(" ")[0]
+            if rule not in rule_indexes:
+                rule_indexes[rule] = len(rules)
+                rules.append({
+                    "id": rule,
+                    "shortDescription": {"text": rule},
+                    "defaultConfiguration": {"level": level},
+                    "properties": {
+                        "basis": basis,
+                        "severity": severity,
+                        "tags": ["apple-app-store", basis.lower()],
+                        "problem.severity": problem_severity,
+                    },
+                })
+
+            if ok is not False:
+                continue
+
+            fingerprint = hashlib.sha256(
+                f"{app_identity}\0{rule}".encode("utf-8")
+            ).hexdigest()
+            finding = {
+                "ruleId": rule,
+                "ruleIndex": rule_indexes[rule],
+                "level": level,
+                "message": {
+                    "text": f"{app}: {message or rule}",
+                },
+                "partialFingerprints": {
+                    "applePresubmitAudit/v1": fingerprint,
+                },
+                "properties": {
+                    "app": app,
+                    "appIdentity": app_identity,
+                    "basis": basis,
+                    "severity": severity,
+                },
+            }
+            if project_anchor:
+                finding["message"]["text"] += (
+                    " (project-level finding; the reported file is an audit anchor)"
+                )
+                finding["locations"] = [{
+                    "physicalLocation": {
+                        "artifactLocation": {
+                            "uri": project_anchor,
+                        },
+                        "region": {
+                            "startLine": 1,
+                        },
+                    },
+                }]
+                finding["properties"]["locationKind"] = "project-anchor"
+            findings.append(finding)
+            if severity == "blocker":
+                blocker_count += 1
+
+    if errors:
+        exit_code = 2
+        exit_description = "Configuration error"
+    elif blocker_count:
+        exit_code = 1
+        exit_description = "Audit completed with blocker findings"
+    else:
+        exit_code = 0
+        exit_description = "Audit completed without blocker findings"
+
+    invocation = {
+        "executionSuccessful": not errors,
+        "exitCode": exit_code,
+        "exitCodeDescription": exit_description,
+    }
+    if errors:
+        invocation["toolExecutionNotifications"] = []
+        for error in errors:
+            context = {
+                key: value for key, value in error.items()
+                if key not in {"code", "message"}
+            }
+            notification = {
+                "descriptor": {
+                    "id": error.get("code", "configuration_error"),
+                },
+                "level": "error",
+                "message": {
+                    "text": error.get("message", "Configuration error"),
+                },
+            }
+            if context:
+                notification["properties"] = context
+            invocation["toolExecutionNotifications"].append(notification)
+
+    return {
+        "$schema": SARIF_SCHEMA,
+        "version": SARIF_VERSION,
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": TOOL_NAME,
+                    "informationUri": TOOL_URL,
+                    "rules": rules,
+                },
+            },
+            "invocations": [invocation],
+            "results": findings,
+        }],
+    }
+
+
+def sarif_report(all_results, errors=None, app_contexts=None):
+    """Emit SARIF 2.1.0 for CI and compatible analysis consumers."""
+    print(json.dumps(sarif_document(
+        all_results,
+        errors=errors,
+        app_contexts=app_contexts,
+    ), indent=2))
+
+
 def configuration_error(code, message, **context):
     """Create one stable, machine-readable CLI configuration error."""
     error = {"code": code, "message": message}
@@ -1324,12 +1525,24 @@ def configuration_error(code, message, **context):
     return error
 
 
-def exit_with_configuration_errors(errors, json_output=False, all_results=None):
-    """Report configuration errors for humans and JSON consumers, then return 2."""
+def exit_with_configuration_errors(
+    errors,
+    json_output=False,
+    all_results=None,
+    sarif_output=False,
+    app_contexts=None,
+):
+    """Report configuration errors for humans and machine consumers."""
     for error in errors:
         print(f"Configuration error: {error['message']}", file=sys.stderr)
     if json_output:
         json_report(all_results or {}, errors=errors)
+    elif sarif_output:
+        sarif_report(
+            all_results or {},
+            errors=errors,
+            app_contexts=app_contexts,
+        )
     return 2
 
 
@@ -1436,6 +1649,7 @@ def load_apps(args):
         ))
         return apps, errors
 
+    first_entry_by_name = {}
     for index, app in enumerate(apps):
         project_path = Path(app["project"])
         if not project_path.is_dir():
@@ -1447,6 +1661,18 @@ def load_apps(args):
                 app=app["name"],
                 project=str(project_path),
             ))
+        previous_entry = first_entry_by_name.get(app["name"])
+        if previous_entry is not None:
+            errors.append(configuration_error(
+                "duplicate_app_name",
+                f"config entry {index + 1} reuses app name '{app['name']}' "
+                f"from entry {previous_entry}; app names must be unique",
+                entry=index + 1,
+                first_entry=previous_entry,
+                app=app["name"],
+            ))
+        else:
+            first_entry_by_name[app["name"]] = index + 1
 
     return apps, errors
 
@@ -1466,13 +1692,20 @@ def main():
                    help="Skip App Store Connect; metadata checks are not evaluated")
     p.add_argument("--quiet", "-q", action="store_true",
                    help="Only print apps with blockers (for CI)")
-    p.add_argument("--json", action="store_true",
-                   help="Emit JSON output (for CI / scripting)")
+    output = p.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true",
+                        help="Emit JSON output (for CI / scripting)")
+    output.add_argument("--sarif", action="store_true",
+                        help="Emit SARIF 2.1.0 output (for CI / analysis tools)")
     args = p.parse_args()
 
     apps, errors = load_apps(args)
     if errors:
-        sys.exit(exit_with_configuration_errors(errors, args.json))
+        sys.exit(exit_with_configuration_errors(
+            errors,
+            json_output=args.json,
+            sarif_output=args.sarif,
+        ))
 
     asc_client = None
     if not args.no_asc:
@@ -1506,7 +1739,11 @@ def main():
             args.key_file = str(Path(args.key_file).expanduser())
 
         if errors:
-            sys.exit(exit_with_configuration_errors(errors, args.json))
+            sys.exit(exit_with_configuration_errors(
+                errors,
+                json_output=args.json,
+                sarif_output=args.sarif,
+            ))
         try:
             asc_client = ASCClient(
                 args.key_id,
@@ -1522,14 +1759,23 @@ def main():
                 f"{reason}",
                 key_file=str(key_path),
             ))
-            sys.exit(exit_with_configuration_errors(errors, args.json))
+            sys.exit(exit_with_configuration_errors(
+                errors,
+                json_output=args.json,
+                sarif_output=args.sarif,
+            ))
 
     total_blockers = 0
     all_results = {}
+    app_contexts = {}
     for app in apps:
         name = app["name"]
         root = app["project"]
         bid = app.get("bundle_id", "")
+        app_contexts[name] = {
+            "project": root,
+            "bundle_id": bid,
+        }
         asc_data = {}
         if asc_client and bid:
             try:
@@ -1565,18 +1811,29 @@ def main():
         })
         results = audit_app(root, asc_data)
         all_results[name] = results
-        if not args.json:
+        if not (args.json or args.sarif):
             total_blockers += print_report(name, results, quiet=args.quiet)
 
     if errors:
         sys.exit(exit_with_configuration_errors(
             errors,
-            args.json,
+            json_output=args.json,
+            sarif_output=args.sarif,
             all_results=all_results,
+            app_contexts=app_contexts,
         ))
 
     if args.json:
         json_report(all_results)
+        total_blockers = sum(
+            sum(
+                1 for _rule, severity, ok, _message in rs
+                if ok is False and severity == "blocker"
+            )
+            for rs in all_results.values()
+        )
+    elif args.sarif:
+        sarif_report(all_results, app_contexts=app_contexts)
         total_blockers = sum(
             sum(
                 1 for _rule, severity, ok, _message in rs
