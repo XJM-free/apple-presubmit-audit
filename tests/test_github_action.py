@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "github-action-project"
 ACTION = REPO_ROOT / "action.yml"
 WORKFLOW = REPO_ROOT / "examples" / "github-actions" / "apple-presubmit-audit.yml"
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 
 
 class GitHubActionIntegrationTests(unittest.TestCase):
@@ -76,6 +77,14 @@ class GitHubActionIntegrationTests(unittest.TestCase):
         self.assertLess(audit_step, upload_step)
         self.assertLess(upload_step, preserve_step)
         self.assertIn("steps.audit.outputs.exit_code", action)
+
+    def test_ci_runs_the_composite_action_on_a_github_runner(self):
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("uses: ./", workflow)
+        self.assertIn("security-events: write", workflow)
+        self.assertIn("steps.audit.outputs.exit_code", workflow)
+        self.assertIn("steps.audit.outputs.sarif_file", workflow)
 
 
 if __name__ == "__main__":

@@ -39,3 +39,46 @@ jobs:
 
       - name: Compile Python sources
         run: python -m py_compile audit.py tests/test_audit.py tests/test_github_action.py
+
+  action-smoke:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Run the repository action
+        id: audit
+        uses: ./
+        with:
+          project_path: .
+          python_version: "3.11"
+          sarif_file: action-smoke.sarif
+          category: action-smoke
+
+      - name: Verify action outputs
+        env:
+          AUDIT_EXIT_CODE: ${{ steps.audit.outputs.exit_code }}
+          SARIF_FILE: ${{ steps.audit.outputs.sarif_file }}
+        run: |
+          test "$AUDIT_EXIT_CODE" = "0"
+          test "$SARIF_FILE" = "$RUNNER_TEMP/action-smoke.sarif"
+          test -s "$SARIF_FILE"
+          python - "$SARIF_FILE" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          assert report["version"] == "2.1.0"
+          assert report["runs"][0]["invocations"][0]["exitCode"] == 0
+          PY
