@@ -43,7 +43,8 @@ jobs:
   action-smoke:
     if: >-
       github.event_name == 'push' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.actor != 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -60,7 +61,7 @@ jobs:
         id: audit
         uses: ./
         with:
-          project_path: .
+          project_path: tests/fixtures/github-action-project
           python_version: "3.11"
           sarif_file: action-smoke.sarif
           category: action-smoke
@@ -80,5 +81,6 @@ jobs:
 
           report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
           assert report["version"] == "2.1.0"
+          assert report["runs"][0]["tool"]["driver"]["name"] == "apple-presubmit-audit"
           assert report["runs"][0]["invocations"][0]["exitCode"] == 0
           PY
