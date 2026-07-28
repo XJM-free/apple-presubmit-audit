@@ -48,6 +48,10 @@ class GitHubActionIntegrationTests(unittest.TestCase):
             workflow + action,
             r"ASC_(?:KEY_ID|ISSUER_ID|KEY_FILE|PRIVATE_KEY|P8_PATH)",
         )
+        self.assertNotRegex(
+            action,
+            r"cache-dependency-path:\s*\$\{\{\s*github\.action_path",
+        )
         audit_commit = re.search(
             r"^\s*AUDIT_COMMIT:\s+(\S+)",
             workflow,
