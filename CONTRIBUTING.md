@@ -41,9 +41,11 @@ Examples of rule types we'd love:
    classify it as `direct` or `context`, and set `checked_on` only after you
    personally open and verify the page. The date is not an Apple publication
    or last-updated date. Set `fixture_coverage` to the status derived by the
-   catalog tests: use `baseline` or `conditional` only when that existing
-   fixture actually emits the family, and keep all other families as
-   `not-exercised`. This field does not claim dedicated fixture coverage.
+   catalog tests: use `regression` only for an anonymized `before`/`after` case
+   in `tests/fixtures/production-regressions`; otherwise use `baseline` or
+   `conditional` only when that existing fixture emits the family, and keep all
+   other families as `not-exercised`. Baseline and conditional coverage do not
+   claim a dedicated detector regression test.
 4. Add a one-line source comment in `audit.py` when the detector's evidence or
    limits are not obvious from the catalog.
 5. Update `CHANGELOG.md` under `## [Unreleased]`.

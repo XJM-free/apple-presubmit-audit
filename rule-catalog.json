@@ -4,7 +4,8 @@
   "fixture_coverage_semantics": {
     "baseline": "The family is emitted by audit_app for an empty project with empty metadata.",
     "conditional": "The family is not baseline and is emitted by the repository's synthetic conditional-coverage fixture.",
-    "not-exercised": "Neither the baseline nor synthetic conditional-coverage fixture emits the family."
+    "regression": "The family has a dedicated anonymized before/after regression fixture derived from an observed maintenance issue.",
+    "not-exercised": "No baseline, synthetic conditional, or dedicated regression fixture covers the family."
   },
   "sources": [
     {
@@ -147,7 +148,7 @@
     {"id": "ADVISORY CUSTOM sub-group-localization-state", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "subscriptions", "section": "Managing subscriptions", "relationship": "context"}]},
     {"id": "ADVISORY CUSTOM transaction-updates-listener", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "transaction-updates", "section": "Transaction.updates", "relationship": "context"}]},
     {"id": "ADVISORY CUSTOM is-premium-bypass", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "subscriptions", "section": "Providing subscription service", "relationship": "context"}]},
-    {"id": "ADVISORY CUSTOM cloudkit-sync-fetch-then-modify", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "not-exercised", "source_refs": [{"source_id": "cloudkit-save-policy", "section": "Save policy", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM cloudkit-sync-fetch-then-modify", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "regression", "source_refs": [{"source_id": "cloudkit-save-policy", "section": "Save policy", "relationship": "context"}]},
     {"id": "ADVISORY CUSTOM cloudkit-prod-schema-deploy", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "not-exercised", "source_refs": [{"source_id": "cloudkit-schema", "section": "Overview", "relationship": "context"}]},
     {"id": "ADVISORY CUSTOM paywall-benefit-{benefit_id}", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "runtime_id_pattern": "^ADVISORY CUSTOM paywall-benefit-[a-z0-9_]+$", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.3.1(a)", "relationship": "context"}]},
     {"id": "OFFICIAL 1.5 all-locales-have-support-url", "basis": "OFFICIAL", "default_severity": "blocker", "fixture_coverage": "baseline", "source_refs": [{"source_id": "platform-version-information", "section": "Support URL", "relationship": "direct"}]},
@@ -155,7 +156,7 @@
     {"id": "ADVISORY CUSTOM 3.1.2(c) paywall-legal-link-color", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "subscriptions", "section": "Presenting subscriptions", "relationship": "context"}]},
     {"id": "ADVISORY CUSTOM swiftdata-model-defaults", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "swiftdata-model-data", "section": "Turn classes into models", "relationship": "context"}]},
     {"id": "ADVISORY CUSTOM ai-body-missing-model-{file_name}", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "not-exercised", "runtime_id_pattern": "^ADVISORY CUSTOM ai-body-missing-model-.+$", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.3.1(a)", "relationship": "context"}]},
-    {"id": "ADVISORY CUSTOM empty-state-vs-error-state", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.1", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM empty-state-vs-error-state", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "regression", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.1", "relationship": "context"}]},
     {"id": "ADVISORY CUSTOM release-notes-length", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "platform-version-information", "section": "What's New", "relationship": "context"}]}
   ]
 }

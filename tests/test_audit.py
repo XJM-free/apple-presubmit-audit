@@ -12,6 +12,9 @@ from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PRODUCTION_REGRESSION_ROOT = (
+    REPO_ROOT / "tests" / "fixtures" / "production-regressions"
+)
 sys.path.insert(0, str(REPO_ROOT))
 
 import audit  # noqa: E402
@@ -25,6 +28,7 @@ class AuditRuleTests(unittest.TestCase):
         fixture_coverage_values = {
             "baseline",
             "conditional",
+            "regression",
             "not-exercised",
         }
         self.assertEqual(
@@ -162,13 +166,20 @@ class AuditRuleTests(unittest.TestCase):
             }
 
         conditional_families = synthetic_families - baseline_families
+        fixture_manifest = json.loads(
+            (PRODUCTION_REGRESSION_ROOT / "cases.json").read_text(encoding="utf-8")
+        )
+        regression_families = {
+            case["rule_id"] for case in fixture_manifest["cases"]
+        }
         actual = {
             rule["id"]: rule["fixture_coverage"]
             for rule in catalog["rules"]
         }
         expected = {
             rule["id"]: (
-                "baseline" if rule["id"] in baseline_families
+                "regression" if rule["id"] in regression_families
+                else "baseline" if rule["id"] in baseline_families
                 else "conditional" if rule["id"] in conditional_families
                 else "not-exercised"
             )
@@ -177,6 +188,62 @@ class AuditRuleTests(unittest.TestCase):
 
         self.assertEqual(expected, actual)
         self.assertIn("not-exercised", actual.values())
+
+    def test_anonymized_production_regressions_fail_before_and_pass_after(self):
+        manifest = json.loads(
+            (PRODUCTION_REGRESSION_ROOT / "cases.json").read_text(encoding="utf-8")
+        )
+        catalog_rules = {
+            rule["id"]: rule for rule in audit.load_rule_catalog()["rules"]
+        }
+
+        self.assertEqual(1, manifest["schema_version"])
+        self.assertGreaterEqual(len(manifest["cases"]), 3)
+        self.assertEqual(
+            len(manifest["cases"]),
+            len({case["id"] for case in manifest["cases"]}),
+        )
+
+        for case in manifest["cases"]:
+            with self.subTest(case=case["id"]):
+                self.assertIn(
+                    case["evidence_level"],
+                    {"observed-runtime-failure", "verified-production-fix"},
+                )
+                self.assertTrue(case["summary"])
+                self.assertTrue(case["change"])
+                self.assertTrue(case["before_message_fragments"])
+                self.assertIn(case["rule_id"], catalog_rules)
+                self.assertEqual(
+                    "regression",
+                    catalog_rules[case["rule_id"]]["fixture_coverage"],
+                )
+                case_root = PRODUCTION_REGRESSION_ROOT / case["id"]
+                before = {
+                    rule_id: (passed, message)
+                    for rule_id, _severity, passed, message
+                    in audit.audit_app(case_root / "before", {})
+                }
+                after = {
+                    rule_id: (passed, message)
+                    for rule_id, _severity, passed, message
+                    in audit.audit_app(case_root / "after", {})
+                }
+
+                self.assertIn(case["rule_id"], before)
+                self.assertIs(False, before[case["rule_id"]][0])
+                for fragment in case["before_message_fragments"]:
+                    self.assertIn(fragment, before[case["rule_id"]][1])
+                self.assertIn(case["rule_id"], after)
+                self.assertIs(True, after[case["rule_id"]][0])
+
+        fixture_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in PRODUCTION_REGRESSION_ROOT.rglob("*")
+            if path.is_file()
+        )
+        self.assertNotIn("com.jiexiang", fixture_text)
+        self.assertNotRegex(fixture_text, r"BEGIN (?:RSA |EC )?PRIVATE KEY")
 
     def test_rule_catalog_cli_needs_no_project_configuration(self):
         result = self._run_cli("--rule-catalog")
