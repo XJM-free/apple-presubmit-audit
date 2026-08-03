@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 import urllib.parse
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +18,173 @@ import audit  # noqa: E402
 
 
 class AuditRuleTests(unittest.TestCase):
+    def test_rule_catalog_has_verified_apple_sources_and_valid_metadata(self):
+        catalog = audit.load_rule_catalog()
+
+        self.assertEqual(1, catalog["schema_version"])
+        fixture_coverage_values = {
+            "baseline",
+            "conditional",
+            "not-exercised",
+        }
+        self.assertEqual(
+            fixture_coverage_values,
+            set(catalog["fixture_coverage_semantics"]),
+        )
+
+        sources = {source["id"]: source for source in catalog["sources"]}
+        self.assertEqual(len(catalog["sources"]), len(sources))
+        for source_id, source in sources.items():
+            with self.subTest(source=source_id):
+                parsed = urllib.parse.urlparse(source["url"])
+                self.assertEqual("https", parsed.scheme)
+                hostname = parsed.hostname or ""
+                self.assertTrue(
+                    hostname == "apple.com" or hostname.endswith(".apple.com")
+                )
+                self.assertLessEqual(
+                    date.fromisoformat(source["checked_on"]),
+                    date.today(),
+                )
+
+        rules = {rule["id"]: rule for rule in catalog["rules"]}
+        self.assertEqual(len(catalog["rules"]), len(rules))
+        placeholder_examples = {
+            "{usage_description_key}": "NSCameraUsageDescription",
+            "{product_id}": "com.example.product",
+            "{benefit_id}": "csv_export",
+            "{file_name}": "Service.swift",
+        }
+        used_source_ids = {
+            ref["source_id"]
+            for rule in catalog["rules"]
+            for ref in rule["source_refs"]
+        }
+        self.assertEqual(set(sources), used_source_ids)
+        for rule_id, rule in rules.items():
+            with self.subTest(rule=rule_id):
+                self.assertTrue(rule_id.startswith(f"{rule['basis']} "))
+                self.assertIn(rule["basis"], {"OFFICIAL", "READINESS", "ADVISORY"})
+                self.assertIn(rule["default_severity"], {"blocker", "high", "low"})
+                self.assertIn(rule["fixture_coverage"], fixture_coverage_values)
+                self.assertTrue(rule["source_refs"])
+                self.assertTrue(all(
+                    ref["source_id"] in sources
+                    and ref["relationship"] in {"direct", "context"}
+                    for ref in rule["source_refs"]
+                ))
+                if rule["basis"] == "ADVISORY":
+                    self.assertNotEqual("blocker", rule["default_severity"])
+                else:
+                    self.assertIn(
+                        "direct",
+                        {ref["relationship"] for ref in rule["source_refs"]},
+                    )
+                if "{" in rule_id:
+                    sample_id = rule_id
+                    for placeholder, example in placeholder_examples.items():
+                        sample_id = sample_id.replace(placeholder, example)
+                    self.assertNotIn("{", sample_id)
+                    self.assertRegex(sample_id, rule["runtime_id_pattern"])
+                else:
+                    self.assertNotIn("runtime_id_pattern", rule)
+
+    def test_rule_catalog_covers_every_implementation_rule_family(self):
+        placeholders = {
+            "key": "usage_description_key",
+            "pid": "product_id",
+            "rule_name": "benefit_id",
+            "os.path.basename(p)": "file_name",
+        }
+
+        def rule_template(call):
+            basis = call.func.id.upper()
+            rule_arg = call.args[0]
+            if isinstance(rule_arg, ast.Constant):
+                return f"{basis} {rule_arg.value}"
+            if not isinstance(rule_arg, ast.JoinedStr):
+                self.fail(f"unsupported rule ID expression: {ast.unparse(rule_arg)}")
+            parts = []
+            for value in rule_arg.values:
+                if isinstance(value, ast.Constant):
+                    parts.append(value.value)
+                    continue
+                expression = ast.unparse(value.value)
+                if expression not in placeholders:
+                    self.fail(f"uncataloged dynamic rule placeholder: {expression}")
+                parts.append("{" + placeholders[expression] + "}")
+            return f"{basis} {''.join(parts)}"
+
+        tree = ast.parse((REPO_ROOT / "audit.py").read_text(encoding="utf-8"))
+        implementation_rules = {
+            rule_template(node): ast.literal_eval(node.args[1])
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"official", "readiness", "advisory"}
+        }
+        catalog_rules = {
+            rule["id"]: rule["default_severity"]
+            for rule in audit.load_rule_catalog()["rules"]
+        }
+
+        self.assertEqual(catalog_rules, implementation_rules)
+
+    def test_fixture_coverage_matches_actual_fixture_emission(self):
+        catalog = audit.load_rule_catalog()
+
+        def family_for(runtime_id):
+            matches = []
+            for rule in catalog["rules"]:
+                if rule["id"] == runtime_id:
+                    matches.append(rule["id"])
+                elif "runtime_id_pattern" in rule and re.fullmatch(
+                    rule["runtime_id_pattern"], runtime_id
+                ):
+                    matches.append(rule["id"])
+            self.assertEqual(1, len(matches), runtime_id)
+            return matches[0]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline_families = {
+                family_for(rule_id)
+                for rule_id, _severity, _passed, _message
+                in audit.audit_app(tmp, {})
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_coverage_project(root)
+            synthetic_families = {
+                family_for(rule_id)
+                for rule_id, _severity, _passed, _message
+                in audit.audit_app(root, self._coverage_metadata())
+            }
+
+        conditional_families = synthetic_families - baseline_families
+        actual = {
+            rule["id"]: rule["fixture_coverage"]
+            for rule in catalog["rules"]
+        }
+        expected = {
+            rule["id"]: (
+                "baseline" if rule["id"] in baseline_families
+                else "conditional" if rule["id"] in conditional_families
+                else "not-exercised"
+            )
+            for rule in catalog["rules"]
+        }
+
+        self.assertEqual(expected, actual)
+        self.assertIn("not-exercised", actual.values())
+
+    def test_rule_catalog_cli_needs_no_project_configuration(self):
+        result = self._run_cli("--rule-catalog")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("", result.stderr)
+        self.assertEqual(audit.load_rule_catalog(), json.loads(result.stdout))
+
     def test_minimal_project_runs_the_baseline_rule_set(self):
         with tempfile.TemporaryDirectory() as tmp:
             results = audit.audit_app(tmp, {})
@@ -266,19 +434,25 @@ class AuditRuleTests(unittest.TestCase):
         self.assertEqual([], report["runs"][0]["results"])
         self.assertIn("Configuration error:", result.stderr)
 
-    def test_json_and_sarif_are_mutually_exclusive(self):
-        result = self._run_cli(
-            "--project",
-            ".",
-            "--no-asc",
-            "--json",
-            "--sarif",
-            cwd=REPO_ROOT,
-        )
+    def test_output_modes_are_mutually_exclusive(self):
+        for left, right in (
+            ("--json", "--sarif"),
+            ("--json", "--rule-catalog"),
+            ("--sarif", "--rule-catalog"),
+        ):
+            with self.subTest(left=left, right=right):
+                result = self._run_cli(
+                    "--project",
+                    ".",
+                    "--no-asc",
+                    left,
+                    right,
+                    cwd=REPO_ROOT,
+                )
 
-        self.assertEqual(2, result.returncode)
-        self.assertEqual("", result.stdout)
-        self.assertIn("not allowed with argument", result.stderr)
+                self.assertEqual(2, result.returncode)
+                self.assertEqual("", result.stdout)
+                self.assertIn("not allowed with argument", result.stderr)
 
     def test_config_rejects_missing_and_non_directory_project_paths(self):
         with tempfile.TemporaryDirectory() as tmp:

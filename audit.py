@@ -47,6 +47,15 @@ except ImportError:
     sys.exit(2)
 
 
+RULE_CATALOG_PATH = Path(__file__).with_name("rule-catalog.json")
+
+
+def load_rule_catalog():
+    """Load the versioned, machine-readable rule and source catalog."""
+    with RULE_CATALOG_PATH.open(encoding="utf-8") as catalog_file:
+        return json.load(catalog_file)
+
+
 # ─── ASC API helpers ──────────────────────────────────────────────────────────
 class ASCRequestError(RuntimeError):
     """A sanitized App Store Connect failure safe to expose in CLI output."""
@@ -1697,7 +1706,13 @@ def main():
                         help="Emit JSON output (for CI / scripting)")
     output.add_argument("--sarif", action="store_true",
                         help="Emit SARIF 2.1.0 output (for CI / analysis tools)")
+    output.add_argument("--rule-catalog", action="store_true",
+                        help="Emit the machine-readable rule/source catalog")
     args = p.parse_args()
+
+    if args.rule_catalog:
+        print(json.dumps(load_rule_catalog(), indent=2, ensure_ascii=False))
+        return
 
     apps, errors = load_apps(args)
     if errors:
