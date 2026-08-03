@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "date_semantics": "checked_on records when a maintainer last opened and verified the linked Apple page; it is not the page publication or update date.",
+  "fixture_coverage_semantics": {
+    "baseline": "The family is emitted by audit_app for an empty project with empty metadata.",
+    "conditional": "The family is not baseline and is emitted by the repository's synthetic conditional-coverage fixture.",
+    "not-exercised": "Neither the baseline nor synthetic conditional-coverage fixture emits the family."
+  },
+  "sources": [
+    {
+      "id": "app-review-guidelines",
+      "title": "App Review Guidelines",
+      "url": "https://developer.apple.com/app-store/review/guidelines/",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "platform-version-information",
+      "title": "Platform version information",
+      "url": "https://developer.apple.com/help/app-store-connect/reference/app-information/platform-version-information/",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "app-age-rating",
+      "title": "Set an app age rating",
+      "url": "https://developer.apple.com/help/app-store-connect/manage-app-information/set-an-app-age-rating/",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "app-info-api",
+      "title": "AppInfo",
+      "url": "https://developer.apple.com/documentation/appstoreconnectapi/appinfo",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "subscriptions",
+      "title": "Auto-renewable subscriptions",
+      "url": "https://developer.apple.com/app-store/subscriptions/",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "subscription-availability",
+      "title": "Set availability for an auto-renewable subscription",
+      "url": "https://developer.apple.com/help/app-store-connect/manage-subscriptions/set-availability-for-an-auto-renewable-subscription",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "submission-overview",
+      "title": "Overview of submitting for review",
+      "url": "https://developer.apple.com/help/app-store-connect/manage-submissions-to-app-review/overview-of-submitting-for-review",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "submit-in-app-purchase",
+      "title": "Submit an In-App Purchase",
+      "url": "https://developer.apple.com/help/app-store-connect/manage-submissions-to-app-review/submit-an-in-app-purchase/",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "account-deletion",
+      "title": "Offering account deletion in your app",
+      "url": "https://developer.apple.com/support/offering-account-deletion-in-your-app/",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "user-privacy-data-use",
+      "title": "User privacy and data use",
+      "url": "https://developer.apple.com/app-store/user-privacy-and-data-use/",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "information-property-list",
+      "title": "Managing your app's information property list values",
+      "url": "https://developer.apple.com/documentation/bundleresources/managing-your-app-s-information-property-list",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "transaction-updates",
+      "title": "Transaction.updates",
+      "url": "https://developer.apple.com/documentation/storekit/transaction/updates",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "cloudkit-save-policy",
+      "title": "CKModifyRecordsOperation.savePolicy",
+      "url": "https://developer.apple.com/documentation/cloudkit/ckmodifyrecordsoperation/savepolicy",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "cloudkit-schema",
+      "title": "Deploying an iCloud Container's Schema",
+      "url": "https://developer.apple.com/documentation/cloudkit/deploying-an-icloud-container-s-schema",
+      "checked_on": "2026-08-03"
+    },
+    {
+      "id": "swiftdata-model-data",
+      "title": "Preserving your app's model data across launches",
+      "url": "https://developer.apple.com/documentation/swiftdata/preserving-your-apps-model-data-across-launches",
+      "checked_on": "2026-08-03"
+    }
+  ],
+  "rules": [
+    {"id": "ADVISORY 1.1.6 fake-content-keywords", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "1.1.6", "relationship": "context"}]},
+    {"id": "ADVISORY 1.4.1 medical-sensor-claim", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "1.4.1", "relationship": "context"}]},
+    {"id": "ADVISORY 1.3 kids-third-party-ads", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "app-review-guidelines", "section": "1.3", "relationship": "context"}]},
+    {"id": "OFFICIAL 1.5 support-url", "basis": "OFFICIAL", "default_severity": "blocker", "fixture_coverage": "baseline", "source_refs": [{"source_id": "platform-version-information", "section": "Support URL", "relationship": "direct"}, {"source_id": "app-review-guidelines", "section": "1.5", "relationship": "direct"}]},
+    {"id": "OFFICIAL 2.1 description-present", "basis": "OFFICIAL", "default_severity": "blocker", "fixture_coverage": "baseline", "source_refs": [{"source_id": "platform-version-information", "section": "Description", "relationship": "direct"}]},
+    {"id": "ADVISORY 2.1 description-detail", "basis": "ADVISORY", "default_severity": "low", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.1", "relationship": "context"}]},
+    {"id": "ADVISORY 2.1 placeholder-text", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.1(a)", "relationship": "context"}]},
+    {"id": "ADVISORY 2.1 audio-promise-implemented", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.3.1(a)", "relationship": "context"}]},
+    {"id": "ADVISORY 2.1 identify-promise-implemented", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.3.1(a)", "relationship": "context"}]},
+    {"id": "ADVISORY 2.3.1(a) notes-detail", "basis": "ADVISORY", "default_severity": "low", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.3.1(a)", "relationship": "context"}]},
+    {"id": "ADVISORY 2.3.1(a) notes-coverage", "basis": "ADVISORY", "default_severity": "low", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.3.1(a)", "relationship": "context"}]},
+    {"id": "OFFICIAL 2.3.7 name-length", "basis": "OFFICIAL", "default_severity": "blocker", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.3.7", "relationship": "direct"}]},
+    {"id": "ADVISORY 2.3.8 plist-name-consistency", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.3.8", "relationship": "context"}]},
+    {"id": "ADVISORY 2.3.10 competing-platform-reference", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.3.10", "relationship": "context"}]},
+    {"id": "ADVISORY 2.5.1 {usage_description_key}", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "runtime_id_pattern": "^ADVISORY 2\\.5\\.1 NS[A-Za-z0-9]+UsageDescription$", "source_refs": [{"source_id": "information-property-list", "section": "Protected resources", "relationship": "context"}, {"source_id": "app-review-guidelines", "section": "2.5.1", "relationship": "context"}]},
+    {"id": "ADVISORY 3.1.1 trial-disclosure", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "subscriptions", "section": "Presenting subscriptions", "relationship": "context"}]},
+    {"id": "ADVISORY 3.1.2(c) renewal-disclosure-copy", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "subscriptions", "section": "Presenting subscriptions", "relationship": "context"}]},
+    {"id": "ADVISORY 3.1.2(c) price-prominence", "basis": "ADVISORY", "default_severity": "low", "fixture_coverage": "conditional", "source_refs": [{"source_id": "subscriptions", "section": "Presenting subscriptions", "relationship": "context"}]},
+    {"id": "ADVISORY 3.1.1 restore-mechanism", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "app-review-guidelines", "section": "3.1.1", "relationship": "context"}]},
+    {"id": "ADVISORY 3.1.2(c) privacy-link", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "subscriptions", "section": "Presenting subscriptions", "relationship": "context"}]},
+    {"id": "ADVISORY 3.1.2(c) terms-link", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "subscriptions", "section": "Presenting subscriptions", "relationship": "context"}]},
+    {"id": "ADVISORY 3.1.2(c) terms-metadata", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "subscriptions", "section": "Presenting subscriptions", "relationship": "context"}]},
+    {"id": "ADVISORY 3.2.2(x) forced-rating-pattern", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "3.2.2(x)", "relationship": "context"}]},
+    {"id": "ADVISORY 4.2 minimum-functionality-shape", "basis": "ADVISORY", "default_severity": "low", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "4.2", "relationship": "context"}]},
+    {"id": "ADVISORY 4.3 duplicate-app-shape", "basis": "ADVISORY", "default_severity": "low", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "4.3", "relationship": "context"}]},
+    {"id": "ADVISORY 4.8 sign-in-with-apple", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "not-exercised", "source_refs": [{"source_id": "app-review-guidelines", "section": "4.8", "relationship": "context"}]},
+    {"id": "ADVISORY 4.5.4 push-opt-in", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "not-exercised", "source_refs": [{"source_id": "app-review-guidelines", "section": "4.5.4", "relationship": "context"}]},
+    {"id": "OFFICIAL 5.1.1(i) privacy-asc", "basis": "OFFICIAL", "default_severity": "blocker", "fixture_coverage": "baseline", "source_refs": [{"source_id": "user-privacy-data-use", "section": "Describing how your app uses data", "relationship": "direct"}, {"source_id": "app-review-guidelines", "section": "5.1.1(i)", "relationship": "direct"}]},
+    {"id": "ADVISORY 5.1.1(i) privacy-in-app", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "5.1.1(i)", "relationship": "context"}]},
+    {"id": "ADVISORY 5.1.1(i) privacy-url-reachable", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "not-exercised", "source_refs": [{"source_id": "app-review-guidelines", "section": "5.1.1(i)", "relationship": "context"}]},
+    {"id": "ADVISORY 1.5 support-url-reachable", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "not-exercised", "source_refs": [{"source_id": "app-review-guidelines", "section": "1.5", "relationship": "context"}]},
+    {"id": "ADVISORY 5.1.1(v) account-deletion-ui", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "not-exercised", "source_refs": [{"source_id": "account-deletion", "section": "Account deletion guidance", "relationship": "context"}, {"source_id": "app-review-guidelines", "section": "5.1.1(v)", "relationship": "context"}]},
+    {"id": "ADVISORY 2.3.6 gambling-rating-consistency", "basis": "ADVISORY", "default_severity": "low", "fixture_coverage": "conditional", "source_refs": [{"source_id": "app-age-rating", "section": "Set an app age rating", "relationship": "context"}, {"source_id": "app-review-guidelines", "section": "2.3.6", "relationship": "context"}]},
+    {"id": "OFFICIAL 2.3.6 age-rating-set", "basis": "OFFICIAL", "default_severity": "blocker", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-age-rating", "section": "Set an app age rating", "relationship": "direct"}]},
+    {"id": "READINESS 2.3.6 appinfo-not-rejected", "basis": "READINESS", "default_severity": "blocker", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-info-api", "section": "AppInfo attributes", "relationship": "direct"}]},
+    {"id": "ADVISORY 5.3 regulated-industry-keywords", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "5.3", "relationship": "context"}]},
+    {"id": "ADVISORY 5.1.1(iii) data-sharing-opt-in", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "app-review-guidelines", "section": "5.1.1(iii)", "relationship": "context"}]},
+    {"id": "ADVISORY 5.2.1 content-ownership", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "app-review-guidelines", "section": "5.2.1", "relationship": "context"}]},
+    {"id": "ADVISORY 5.4 vpn-review-context", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "app-review-guidelines", "section": "5.4", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM detector-hardware-context", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "app-review-guidelines", "section": "1.4.1 and 2.3.1(a)", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM health-keyword-no-healthkit", "basis": "ADVISORY", "default_severity": "low", "fixture_coverage": "conditional", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.5.1", "relationship": "context"}]},
+    {"id": "READINESS CUSTOM subscription-state-ready", "basis": "READINESS", "default_severity": "blocker", "fixture_coverage": "conditional", "source_refs": [{"source_id": "submission-overview", "section": "Items eligible for review", "relationship": "direct"}]},
+    {"id": "READINESS CUSTOM sub-availability-{product_id}", "basis": "READINESS", "default_severity": "blocker", "fixture_coverage": "conditional", "runtime_id_pattern": "^READINESS CUSTOM sub-availability-.+$", "source_refs": [{"source_id": "subscription-availability", "section": "Set availability for a subscription", "relationship": "direct"}]},
+    {"id": "ADVISORY CUSTOM sub-territories-coverage-{product_id}", "basis": "ADVISORY", "default_severity": "low", "fixture_coverage": "conditional", "runtime_id_pattern": "^ADVISORY CUSTOM sub-territories-coverage-.+$", "source_refs": [{"source_id": "subscription-availability", "section": "Set availability for a subscription", "relationship": "context"}]},
+    {"id": "READINESS CUSTOM sub-never-submitted-{product_id}", "basis": "READINESS", "default_severity": "blocker", "fixture_coverage": "conditional", "runtime_id_pattern": "^READINESS CUSTOM sub-never-submitted-.+$", "source_refs": [{"source_id": "submit-in-app-purchase", "section": "Submit an In-App Purchase", "relationship": "direct"}]},
+    {"id": "ADVISORY CUSTOM sub-group-localization-state", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "subscriptions", "section": "Managing subscriptions", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM transaction-updates-listener", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "transaction-updates", "section": "Transaction.updates", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM is-premium-bypass", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "subscriptions", "section": "Providing subscription service", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM cloudkit-sync-fetch-then-modify", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "not-exercised", "source_refs": [{"source_id": "cloudkit-save-policy", "section": "Save policy", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM cloudkit-prod-schema-deploy", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "not-exercised", "source_refs": [{"source_id": "cloudkit-schema", "section": "Overview", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM paywall-benefit-{benefit_id}", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "runtime_id_pattern": "^ADVISORY CUSTOM paywall-benefit-[a-z0-9_]+$", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.3.1(a)", "relationship": "context"}]},
+    {"id": "OFFICIAL 1.5 all-locales-have-support-url", "basis": "OFFICIAL", "default_severity": "blocker", "fixture_coverage": "baseline", "source_refs": [{"source_id": "platform-version-information", "section": "Support URL", "relationship": "direct"}]},
+    {"id": "ADVISORY CUSTOM 5.1.1 {usage_description_key}", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "runtime_id_pattern": "^ADVISORY CUSTOM 5\\.1\\.1 NS[A-Za-z0-9]+UsageDescription$", "source_refs": [{"source_id": "information-property-list", "section": "Protected resources", "relationship": "context"}, {"source_id": "app-review-guidelines", "section": "5.1.1", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM 3.1.2(c) paywall-legal-link-color", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "conditional", "source_refs": [{"source_id": "subscriptions", "section": "Presenting subscriptions", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM swiftdata-model-defaults", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "swiftdata-model-data", "section": "Turn classes into models", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM ai-body-missing-model-{file_name}", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "not-exercised", "runtime_id_pattern": "^ADVISORY CUSTOM ai-body-missing-model-.+$", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.3.1(a)", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM empty-state-vs-error-state", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "app-review-guidelines", "section": "2.1", "relationship": "context"}]},
+    {"id": "ADVISORY CUSTOM release-notes-length", "basis": "ADVISORY", "default_severity": "high", "fixture_coverage": "baseline", "source_refs": [{"source_id": "platform-version-information", "section": "What's New", "relationship": "context"}]}
+  ]
+}

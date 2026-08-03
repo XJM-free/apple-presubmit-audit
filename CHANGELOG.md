@@ -24,6 +24,9 @@
   that upload SARIF before preserving audit exit status.
 - A runner-level smoke job that executes the local composite Action and verifies
   its exit-code and SARIF outputs.
+- A machine-readable `rule-catalog.json` and `--rule-catalog` CLI output with
+  every rule family, official Apple source links, honest source-check dates,
+  and test-derived fixture-emission status.
 
 ### Changed
 

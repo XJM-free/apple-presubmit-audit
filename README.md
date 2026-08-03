@@ -103,6 +103,35 @@ Never commit App Store Connect credentials. This repository ignores common
 private-key, provisioning-profile, environment, and local app-config files by
 default.
 
+## Machine-readable rule catalog
+
+[`rule-catalog.json`](./rule-catalog.json) lists every rule family, its evidence
+basis, default severity, and the Apple documentation used as either a direct
+requirement or advisory context. Fetch the same document through the CLI
+without a project or App Store Connect credentials:
+
+```bash
+python3 audit.py --rule-catalog > /tmp/apple-presubmit-rule-catalog.json
+```
+
+Dynamic product, permission, benefit, and file-specific findings use `{...}`
+templates plus `runtime_id_pattern`. `checked_on` is the date a maintainer
+actually opened and verified an Apple source. It is not presented as Apple's
+publication or last-updated date. Tests keep the catalog aligned with every
+rule helper call and reject non-Apple source domains.
+
+`fixture_coverage` reports family-level emission by the repository's existing
+fixtures:
+
+- `baseline` — emitted for an empty temporary project with empty metadata.
+- `conditional` — not baseline, but emitted by the synthetic conditional-
+  coverage project and metadata.
+- `not-exercised` — emitted by neither fixture.
+
+This field does not claim a dedicated fixture, a triggering/non-triggering
+pair, or detector correctness. It makes current fixture gaps visible, and its
+values are recalculated from real `audit_app` output in the test suite.
+
 ## GitHub Code Scanning in five minutes
 
 Copy
