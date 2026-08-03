@@ -27,6 +27,9 @@
 - A machine-readable `rule-catalog.json` and `--rule-catalog` CLI output with
   every rule family, official Apple source links, honest source-check dates,
   and test-derived fixture-emission status.
+- Three anonymized `before`/`after` regression fixtures for CloudKit repeated
+  saves, CloudKit empty states, and filesystem export errors, with explicit
+  evidence levels that avoid claiming an App Review rejection.
 
 ### Changed
 

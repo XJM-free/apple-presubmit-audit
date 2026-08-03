@@ -126,11 +126,16 @@ fixtures:
 - `baseline` — emitted for an empty temporary project with empty metadata.
 - `conditional` — not baseline, but emitted by the synthetic conditional-
   coverage project and metadata.
-- `not-exercised` — emitted by neither fixture.
+- `regression` — exercised by a dedicated anonymized `before`/`after` pair in
+  [`tests/fixtures/production-regressions`](./tests/fixtures/production-regressions).
+- `not-exercised` — covered by none of the fixture classes above.
 
-This field does not claim a dedicated fixture, a triggering/non-triggering
-pair, or detector correctness. It makes current fixture gaps visible, and its
-values are recalculated from real `audit_app` output in the test suite.
+Baseline and conditional statuses only record emission; they do not claim a
+triggering/non-triggering pair or detector correctness. Regression status does
+require the named advisory to fail before the reduced project change and pass
+after it. The fixture manifest distinguishes reproduced runtime failures from
+release-audit findings and does not present either as an App Review rejection.
+All values are recalculated from real `audit_app` output in the test suite.
 
 ## GitHub Code Scanning in five minutes
 
