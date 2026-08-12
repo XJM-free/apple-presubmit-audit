@@ -5,6 +5,9 @@ Evidence-labeled checks across Apple Review Guideline categories plus local
 engineering-readiness heuristics.
 
 Usage:
+  # Explain one stable finding without scanning a project:
+  python3 audit.py --explain "OFFICIAL 2.3.7 name-length"
+
   # Audit local Xcode project against ASC metadata:
   python3 audit.py --project ./MyApp --bundle-id com.example.myapp \\
                    --key-id KEY_ID --issuer-id ISSUER_ID --key-file ./AuthKey.p8
@@ -54,6 +57,78 @@ def load_rule_catalog():
     """Load the versioned, machine-readable rule and source catalog."""
     with RULE_CATALOG_PATH.open(encoding="utf-8") as catalog_file:
         return json.load(catalog_file)
+
+
+def match_rule_families(rule_id, catalog=None):
+    """Return every catalog family matching one static, template, or runtime ID."""
+    if catalog is None:
+        catalog = load_rule_catalog()
+    return [
+        rule
+        for rule in catalog["rules"]
+        if rule["id"] == rule_id
+        or (
+            rule.get("runtime_id_pattern")
+            and re.fullmatch(rule["runtime_id_pattern"], rule_id)
+        )
+    ]
+
+
+def build_rule_explanation(rule_id, rule, catalog):
+    """Join one catalog rule to its sources without inspecting an app project."""
+    sources = {source["id"]: source for source in catalog["sources"]}
+    return {
+        "rule": rule_id,
+        "family": rule["id"],
+        "authority": rule["basis"],
+        "severity": rule["default_severity"],
+        "trigger": rule["trigger"],
+        "limits": rule["limits"],
+        "remediation": rule["remediation"],
+        "sources": [
+            {
+                "title": sources[ref["source_id"]]["title"],
+                "section": ref["section"],
+                "url": sources[ref["source_id"]]["url"],
+                "checked_on": sources[ref["source_id"]]["checked_on"],
+                "relationship": ref["relationship"],
+            }
+            for ref in rule["source_refs"]
+        ],
+    }
+
+
+def resolve_rule_explanation(rule_id, catalog=None):
+    """Resolve exactly one family, returning a stable error for unsafe ambiguity."""
+    if catalog is None:
+        catalog = load_rule_catalog()
+    matches = match_rule_families(rule_id, catalog)
+    if not matches:
+        return None, configuration_error("unknown_rule_id", "unknown rule ID")
+    if len(matches) > 1:
+        return None, configuration_error(
+            "ambiguous_rule_id",
+            "rule ID matches more than one catalog family",
+        )
+    return build_rule_explanation(rule_id, matches[0], catalog), None
+
+
+def print_rule_explanation(explanation):
+    """Print a deterministic, human-readable explanation for one rule family."""
+    print(f"Rule: {explanation['rule']}")
+    print(f"Family: {explanation['family']}")
+    print(f"Authority: {explanation['authority']}")
+    print(f"Severity: {explanation['severity']}")
+    print(f"Trigger: {explanation['trigger']}")
+    print(f"Limits: {explanation['limits']}")
+    print(f"Remediation: {explanation['remediation']}")
+    print("Sources:")
+    for source in explanation["sources"]:
+        print(f"  - Title: {source['title']}")
+        print(f"    Section: {source['section']}")
+        print(f"    URL: {source['url']}")
+        print(f"    Checked on: {source['checked_on']}")
+        print(f"    Relationship: {source['relationship']}")
 
 
 # ─── ASC API helpers ──────────────────────────────────────────────────────────
@@ -1708,10 +1783,19 @@ def main():
                         help="Emit SARIF 2.1.0 output (for CI / analysis tools)")
     output.add_argument("--rule-catalog", action="store_true",
                         help="Emit the machine-readable rule/source catalog")
+    output.add_argument("--explain", metavar="RULE_ID",
+                        help="Explain one static, template, or emitted rule ID")
     args = p.parse_args()
 
     if args.rule_catalog:
         print(json.dumps(load_rule_catalog(), indent=2, ensure_ascii=False))
+        return
+
+    if args.explain is not None:
+        explanation, error = resolve_rule_explanation(args.explain)
+        if error:
+            sys.exit(exit_with_configuration_errors([error]))
+        print_rule_explanation(explanation)
         return
 
     apps, errors = load_apps(args)

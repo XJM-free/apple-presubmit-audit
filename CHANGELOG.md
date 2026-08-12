@@ -30,6 +30,9 @@
 - Three anonymized `before`/`after` regression fixtures for CloudKit repeated
   saves, CloudKit empty states, and filesystem export errors, with explicit
   evidence levels that avoid claiming an App Review rejection.
+- `--explain RULE_ID` for a credential-free, project-free explanation of one
+  static, template, or emitted finding, backed by catalog trigger, limit,
+  remediation, and source metadata.
 
 ### Changed
 
@@ -37,6 +40,8 @@
 - Clarified that the catalog includes condition-triggered heuristic families and
   that metadata-only findings are not failures in `--no-asc` mode.
 - Clarified severity language and the limits of CI exit codes.
+- Versioned the rule catalog schema to v2 for per-family trigger, detection-limit,
+  and remediation explanations.
 - Reclassified regex, keyword, file-count, typography, and rejection-derived
   checks as non-blocking advisories, even when they help inspect an official
   guideline.

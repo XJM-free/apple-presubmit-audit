@@ -120,6 +120,20 @@ actually opened and verified an Apple source. It is not presented as Apple's
 publication or last-updated date. Tests keep the catalog aligned with every
 rule helper call and reject non-Apple source domains.
 
+Explain one catalog family from either its template ID or an ID copied from an
+audit finding:
+
+```bash
+python3 audit.py --explain "OFFICIAL 2.3.7 name-length"
+python3 audit.py --explain \
+  "READINESS CUSTOM sub-availability-com.example.product"
+```
+
+The explanation prints the rule's authority, default severity, trigger,
+detection limits, remediation, and source details. It does not load a project,
+read an app configuration, or initialize App Store Connect. Unknown or
+ambiguous IDs fail closed with exit code 2.
+
 `fixture_coverage` reports family-level emission by the repository's existing
 fixtures:
 
