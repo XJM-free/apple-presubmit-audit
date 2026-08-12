@@ -1,4 +1,5 @@
 import ast
+import io
 import json
 import re
 import subprocess
@@ -24,7 +25,7 @@ class AuditRuleTests(unittest.TestCase):
     def test_rule_catalog_has_verified_apple_sources_and_valid_metadata(self):
         catalog = audit.load_rule_catalog()
 
-        self.assertEqual(1, catalog["schema_version"])
+        self.assertEqual(2, catalog["schema_version"])
         fixture_coverage_values = {
             "baseline",
             "conditional",
@@ -71,6 +72,9 @@ class AuditRuleTests(unittest.TestCase):
                 self.assertIn(rule["basis"], {"OFFICIAL", "READINESS", "ADVISORY"})
                 self.assertIn(rule["default_severity"], {"blocker", "high", "low"})
                 self.assertIn(rule["fixture_coverage"], fixture_coverage_values)
+                for field in ("trigger", "limits", "remediation"):
+                    self.assertIsInstance(rule[field], str)
+                    self.assertTrue(rule[field].strip())
                 self.assertTrue(rule["source_refs"])
                 self.assertTrue(all(
                     ref["source_id"] in sources
@@ -79,6 +83,16 @@ class AuditRuleTests(unittest.TestCase):
                 ))
                 if rule["basis"] == "ADVISORY":
                     self.assertNotEqual("blocker", rule["default_severity"])
+                    explanation_text = " ".join(
+                        rule[field] for field in ("trigger", "limits", "remediation")
+                    )
+                    self.assertIsNone(
+                        re.search(
+                            r"\b(?:must|required)\b",
+                            explanation_text,
+                            re.IGNORECASE,
+                        )
+                    )
                 else:
                     self.assertIn(
                         "direct",
@@ -90,8 +104,22 @@ class AuditRuleTests(unittest.TestCase):
                         sample_id = sample_id.replace(placeholder, example)
                     self.assertNotIn("{", sample_id)
                     self.assertRegex(sample_id, rule["runtime_id_pattern"])
+                    self.assertEqual(
+                        [rule_id],
+                        [
+                            match["id"]
+                            for match in audit.match_rule_families(sample_id, catalog)
+                        ],
+                    )
                 else:
                     self.assertNotIn("runtime_id_pattern", rule)
+                self.assertEqual(
+                    [rule_id],
+                    [
+                        match["id"]
+                        for match in audit.match_rule_families(rule_id, catalog)
+                    ],
+                )
 
     def test_rule_catalog_covers_every_implementation_rule_family(self):
         placeholders = {
@@ -138,14 +166,10 @@ class AuditRuleTests(unittest.TestCase):
         catalog = audit.load_rule_catalog()
 
         def family_for(runtime_id):
-            matches = []
-            for rule in catalog["rules"]:
-                if rule["id"] == runtime_id:
-                    matches.append(rule["id"])
-                elif "runtime_id_pattern" in rule and re.fullmatch(
-                    rule["runtime_id_pattern"], runtime_id
-                ):
-                    matches.append(rule["id"])
+            matches = [
+                rule["id"]
+                for rule in audit.match_rule_families(runtime_id, catalog)
+            ]
             self.assertEqual(1, len(matches), runtime_id)
             return matches[0]
 
@@ -251,6 +275,174 @@ class AuditRuleTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("", result.stderr)
         self.assertEqual(audit.load_rule_catalog(), json.loads(result.stdout))
+
+    def test_explain_static_rule_short_circuits_project_and_asc_setup(self):
+        missing_project = "/tmp/apple-presubmit-explain-does-not-exist"
+        result = self._run_cli(
+            "--project",
+            missing_project,
+            "--explain",
+            "OFFICIAL 2.3.7 name-length",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("", result.stderr)
+        self.assertIn("Rule: OFFICIAL 2.3.7 name-length", result.stdout)
+        self.assertIn("Family: OFFICIAL 2.3.7 name-length", result.stdout)
+        self.assertIn("Authority: OFFICIAL", result.stdout)
+        self.assertIn("Severity: blocker", result.stdout)
+        self.assertIn("Trigger:", result.stdout)
+        self.assertIn("Limits:", result.stdout)
+        self.assertIn("Remediation:", result.stdout)
+        self.assertIn("Title: App Review Guidelines", result.stdout)
+        self.assertIn("Section: 2.3.7", result.stdout)
+        self.assertIn("https://developer.apple.com/", result.stdout)
+        guideline_source = next(
+            source
+            for source in audit.load_rule_catalog()["sources"]
+            if source["id"] == "app-review-guidelines"
+        )
+        self.assertIn(
+            f"Checked on: {guideline_source['checked_on']}",
+            result.stdout,
+        )
+        self.assertNotIn(missing_project, result.stdout)
+
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "audit.py",
+                    "--project",
+                    missing_project,
+                    "--explain",
+                    "OFFICIAL 2.3.7 name-length",
+                ],
+            ),
+            mock.patch.object(audit, "load_apps") as load_apps,
+            mock.patch.object(audit, "ASCClient") as asc_client,
+            mock.patch("sys.stdout", stdout),
+        ):
+            audit.main()
+
+        load_apps.assert_not_called()
+        asc_client.assert_not_called()
+
+    def test_explain_preserves_catalog_source_order(self):
+        result = self._run_cli("--explain", "OFFICIAL 1.5 support-url")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("", result.stderr)
+        platform_source = result.stdout.index("Title: Platform version information")
+        guideline_source = result.stdout.index("Title: App Review Guidelines")
+        self.assertLess(platform_source, guideline_source)
+        self.assertEqual(2, result.stdout.count("    Section:"))
+        self.assertEqual(2, result.stdout.count("    URL:"))
+        self.assertEqual(2, result.stdout.count("    Checked on:"))
+        self.assertEqual(2, result.stdout.count("    Relationship: direct"))
+
+    def test_explain_accepts_dynamic_and_template_rule_ids(self):
+        cases = (
+            (
+                "READINESS CUSTOM sub-availability-com.example.product",
+                "READINESS CUSTOM sub-availability-{product_id}",
+            ),
+            (
+                "READINESS CUSTOM sub-availability-{product_id}",
+                "READINESS CUSTOM sub-availability-{product_id}",
+            ),
+        )
+        for rule_id, family in cases:
+            with self.subTest(rule_id=rule_id):
+                result = self._run_cli("--explain", rule_id)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("", result.stderr)
+                self.assertIn(f"Rule: {rule_id}", result.stdout)
+                self.assertIn(f"Family: {family}", result.stdout)
+
+    def test_explain_unknown_rule_has_stable_private_error(self):
+        unknown = "not-a-rule /private/project/Secret.xcodeproj"
+        explanation, error = audit.resolve_rule_explanation(unknown)
+        result = self._run_cli("--explain", unknown)
+
+        self.assertIsNone(explanation)
+        self.assertEqual("unknown_rule_id", error["code"])
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertEqual("Configuration error: unknown rule ID\n", result.stderr)
+        self.assertNotIn(unknown, result.stderr)
+
+    def test_explain_rejects_ambiguous_runtime_id_before_scanning(self):
+        catalog = audit.load_rule_catalog()
+        source_rule = next(
+            rule
+            for rule in catalog["rules"]
+            if rule["id"] == "READINESS CUSTOM sub-availability-{product_id}"
+        )
+        overlapping = dict(source_rule)
+        overlapping["id"] = "READINESS CUSTOM overlapping-{product_id}"
+        catalog["rules"] = [*catalog["rules"], overlapping]
+        explanation, error = audit.resolve_rule_explanation(
+            "READINESS CUSTOM sub-availability-com.example.product",
+            catalog,
+        )
+
+        self.assertIsNone(explanation)
+        self.assertEqual("ambiguous_rule_id", error["code"])
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "audit.py",
+                    "--explain",
+                    "READINESS CUSTOM sub-availability-com.example.product",
+                ],
+            ),
+            mock.patch.object(audit, "load_rule_catalog", return_value=catalog),
+            mock.patch.object(audit, "load_apps") as load_apps,
+            mock.patch.object(audit, "ASCClient") as asc_client,
+            mock.patch("sys.stdout", stdout),
+            mock.patch("sys.stderr", stderr),
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            audit.main()
+
+        self.assertEqual(2, exit_context.exception.code)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual(
+            "Configuration error: rule ID matches more than one catalog family\n",
+            stderr.getvalue(),
+        )
+        load_apps.assert_not_called()
+        asc_client.assert_not_called()
+
+    def test_exact_rule_id_does_not_hide_an_overlapping_runtime_family(self):
+        catalog = audit.load_rule_catalog()
+        source_rule = next(
+            rule
+            for rule in catalog["rules"]
+            if rule["id"] == "READINESS CUSTOM sub-availability-{product_id}"
+        )
+        overlapping = dict(source_rule)
+        overlapping["id"] = "READINESS CUSTOM exact-id-overlap-{product_id}"
+        overlapping["runtime_id_pattern"] = (
+            r"^OFFICIAL 2\.3\.7 name-length$"
+        )
+        catalog["rules"] = [*catalog["rules"], overlapping]
+
+        explanation, error = audit.resolve_rule_explanation(
+            "OFFICIAL 2.3.7 name-length",
+            catalog,
+        )
+
+        self.assertIsNone(explanation)
+        self.assertEqual("ambiguous_rule_id", error["code"])
 
     def test_minimal_project_runs_the_baseline_rule_set(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -506,14 +698,22 @@ class AuditRuleTests(unittest.TestCase):
             ("--json", "--sarif"),
             ("--json", "--rule-catalog"),
             ("--sarif", "--rule-catalog"),
+            ("--json", "--explain"),
+            ("--sarif", "--explain"),
+            ("--rule-catalog", "--explain"),
         ):
             with self.subTest(left=left, right=right):
-                result = self._run_cli(
+                arguments = [
                     "--project",
                     ".",
                     "--no-asc",
                     left,
                     right,
+                ]
+                if left == "--explain" or right == "--explain":
+                    arguments.append("OFFICIAL 2.3.7 name-length")
+                result = self._run_cli(
+                    *arguments,
                     cwd=REPO_ROOT,
                 )
 
