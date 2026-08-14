@@ -22,6 +22,47 @@ import audit  # noqa: E402
 
 
 class AuditRuleTests(unittest.TestCase):
+    def test_source_cli_reports_an_honest_version_without_project_inputs(self):
+        result = self._run_cli("--version")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("apple-presubmit-audit source\n", result.stdout)
+        self.assertEqual("", result.stderr)
+
+    def test_source_version_does_not_read_installed_distribution_metadata(self):
+        with (
+            mock.patch.object(audit, "__package__", ""),
+            mock.patch.object(
+                audit.metadata,
+                "version",
+                side_effect=AssertionError("source lookup must not inspect metadata"),
+            ),
+        ):
+            self.assertEqual("source", audit.cli_version())
+
+    def test_packaged_version_uses_distribution_metadata(self):
+        with (
+            mock.patch.object(audit, "__package__", "apple_presubmit_audit"),
+            mock.patch.object(
+                audit.metadata,
+                "version",
+                return_value="1.2.3",
+            ) as version,
+        ):
+            self.assertEqual("1.2.3", audit.cli_version())
+        version.assert_called_once_with("apple-presubmit-audit")
+
+    def test_packaged_version_falls_back_when_metadata_is_missing(self):
+        with (
+            mock.patch.object(audit, "__package__", "apple_presubmit_audit"),
+            mock.patch.object(
+                audit.metadata,
+                "version",
+                side_effect=audit.metadata.PackageNotFoundError,
+            ),
+        ):
+            self.assertEqual("source", audit.cli_version())
+
     def test_rule_catalog_has_verified_apple_sources_and_valid_metadata(self):
         catalog = audit.load_rule_catalog()
 
