@@ -36,6 +36,8 @@
 - PEP 517 wheel and source distributions for installing the audit as the
   `apple-presubmit-audit` command from a checkout, with the rule catalog
   packaged beside the audit module. No package-index release is implied.
+- `--version` output that reports installed distribution metadata, or `source`
+  when running `audit.py` directly from a checkout.
 
 ### Changed
 

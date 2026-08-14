@@ -29,6 +29,7 @@ import argparse
 import base64
 import glob
 import hashlib
+from importlib import metadata
 import json
 import os
 import re
@@ -51,6 +52,17 @@ except ImportError:
 
 
 RULE_CATALOG_PATH = Path(__file__).with_name("rule-catalog.json")
+DISTRIBUTION_NAME = "apple-presubmit-audit"
+
+
+def cli_version():
+    """Return installed distribution metadata or an honest source marker."""
+    if __package__:
+        try:
+            return metadata.version(DISTRIBUTION_NAME)
+        except metadata.PackageNotFoundError:
+            pass
+    return "source"
 
 
 def load_rule_catalog():
@@ -1765,6 +1777,11 @@ def load_apps(args):
 def main():
     p = argparse.ArgumentParser(
         description="Local, evidence-labeled Apple App Store pre-submit audit"
+    )
+    p.add_argument(
+        "--version",
+        action="version",
+        version=f"{DISTRIBUTION_NAME} {cli_version()}",
     )
     p.add_argument("--project", help="Path to Xcode project root")
     p.add_argument("--bundle-id", help="Bundle identifier (for ASC lookup)")

@@ -2,6 +2,7 @@
 """Smoke-test an installed wheel or sdist from outside the source checkout."""
 
 import json
+from importlib import metadata
 import subprocess
 import sys
 import sysconfig
@@ -48,6 +49,18 @@ def main(argv):
 
     with tempfile.TemporaryDirectory(prefix="apple-presubmit-audit-smoke.") as temp:
         cwd = Path(temp)
+        version = run([executable, "--version"], cwd)
+        expected_version = (
+            f"apple-presubmit-audit "
+            f"{metadata.version('apple-presubmit-audit')}\n"
+        )
+        if (
+            version.returncode != 0
+            or version.stdout != expected_version
+            or version.stderr
+        ):
+            raise AssertionError("installed --version did not match package metadata")
+
         catalog = run([executable, "--rule-catalog"], cwd)
         if catalog.returncode != 0 or json.loads(catalog.stdout) != source_catalog:
             raise AssertionError("--rule-catalog failed from outside the checkout")
