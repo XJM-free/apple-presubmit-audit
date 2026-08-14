@@ -22,9 +22,14 @@ def run(command, cwd):
 
 
 def main(argv):
-    if len(argv) != 1:
-        raise AssertionError("pass the source rule-catalog.json path")
+    if len(argv) != 2:
+        raise AssertionError(
+            "pass the source rule-catalog.json and project fixture paths"
+        )
     source_catalog = json.loads(Path(argv[0]).read_text(encoding="utf-8"))
+    project_fixture = Path(argv[1]).resolve()
+    if not project_fixture.is_dir():
+        raise AssertionError("the project fixture is missing")
     prefix = Path(sys.prefix).resolve()
     module_path = Path(audit.__file__).resolve()
     catalog_path = audit.RULE_CATALOG_PATH.resolve()
@@ -74,6 +79,33 @@ def main(argv):
             raise AssertionError("unknown --explain lookup must return exit code 2")
         if sentinel in unknown.stdout or sentinel in unknown.stderr:
             raise AssertionError("unknown --explain lookup echoed its input")
+
+        project_audit = run(
+            [
+                executable,
+                "--project",
+                project_fixture,
+                "--no-asc",
+                "--json",
+            ],
+            cwd,
+        )
+        if project_audit.returncode != 0:
+            raise AssertionError("installed code-only project audit failed")
+        report = json.loads(project_audit.stdout)
+        if report.get("errors") != [] or report.get("total_blockers") != 0:
+            raise AssertionError("installed project audit returned errors or blockers")
+        apps = report.get("apps")
+        if not isinstance(apps, list) or len(apps) != 1:
+            raise AssertionError("installed project audit returned an invalid app list")
+        rules = apps[0].get("rules")
+        if not isinstance(rules, list) or not rules:
+            raise AssertionError("installed project audit did not run any rules")
+        statuses = {rule.get("status") for rule in rules}
+        if not {"passed", "not_evaluated"}.issubset(statuses):
+            raise AssertionError(
+                "installed --no-asc audit did not preserve evaluation states"
+            )
 
     print(f"installed CLI smoke passed: {module_path}")
 

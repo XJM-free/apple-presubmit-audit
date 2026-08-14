@@ -66,13 +66,17 @@ jobs:
           "$RUNNER_TEMP/wheel-venv/bin/python" -m pip install "${wheel_paths[0]}"
           "$RUNNER_TEMP/wheel-venv/bin/python" -m pip check
           "$RUNNER_TEMP/wheel-venv/bin/python" \
-            tests/smoke_installed_cli.py "$GITHUB_WORKSPACE/rule-catalog.json"
+            tests/smoke_installed_cli.py \
+            "$GITHUB_WORKSPACE/rule-catalog.json" \
+            "$GITHUB_WORKSPACE/tests/fixtures/github-action-project"
 
           python -m venv "$RUNNER_TEMP/sdist-venv"
           "$RUNNER_TEMP/sdist-venv/bin/python" -m pip install "${sdist_paths[0]}"
           "$RUNNER_TEMP/sdist-venv/bin/python" -m pip check
           "$RUNNER_TEMP/sdist-venv/bin/python" \
-            tests/smoke_installed_cli.py "$GITHUB_WORKSPACE/rule-catalog.json"
+            tests/smoke_installed_cli.py \
+            "$GITHUB_WORKSPACE/rule-catalog.json" \
+            "$GITHUB_WORKSPACE/tests/fixtures/github-action-project"
 
           mkdir "$RUNNER_TEMP/sdist-source"
           tar -xzf "${sdist_paths[0]}" -C "$RUNNER_TEMP/sdist-source"

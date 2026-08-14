@@ -7,6 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 PACKAGE_INIT = REPO_ROOT / "__init__.py"
 MANIFEST = REPO_ROOT / "MANIFEST.in"
+INSTALLED_SMOKE = REPO_ROOT / "tests" / "smoke_installed_cli.py"
 
 
 class PackagingContractTests(unittest.TestCase):
@@ -68,6 +69,14 @@ class PackagingContractTests(unittest.TestCase):
                 re.MULTILINE,
             ),
         )
+
+    def test_installed_smoke_runs_the_core_code_only_audit(self):
+        smoke = INSTALLED_SMOKE.read_text(encoding="utf-8")
+
+        self.assertIn('"--project"', smoke)
+        self.assertIn('"--no-asc"', smoke)
+        self.assertIn('"--json"', smoke)
+        self.assertIn('report.get("total_blockers")', smoke)
 
 
 if __name__ == "__main__":
