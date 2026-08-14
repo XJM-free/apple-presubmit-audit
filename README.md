@@ -52,19 +52,26 @@ See [`audit.py`](./audit.py) for the implementation of every check.
 
 ## Quick start
 
+Install the current source checkout in an isolated environment. This repository
+does not claim a package-index release:
+
 ```bash
 git clone https://github.com/XJM-free/apple-presubmit-audit.git
 cd apple-presubmit-audit
 
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -r requirements.txt
+python3 -m pip install .
 ```
+
+The installed command is `apple-presubmit-audit`. Running `python3 audit.py`
+from a checkout remains supported for repository development and for the
+composite Action.
 
 Audit one project against App Store Connect metadata:
 
 ```bash
-python3 audit.py \
+apple-presubmit-audit \
   --project ~/Code/MyApp \
   --bundle-id com.example.myapp \
   --key-id ABC123XYZ \
@@ -79,24 +86,24 @@ export ASC_KEY_ID=ABC123XYZ
 export ASC_ISSUER_ID=12345-67890-...
 export ASC_KEY_FILE=~/AuthKey_ABC123XYZ.p8
 
-python3 audit.py --project ~/Code/MyApp --bundle-id com.example.myapp
+apple-presubmit-audit --project ~/Code/MyApp --bundle-id com.example.myapp
 ```
 
 Code-only mode skips App Store Connect. It is useful for local iteration, but
 metadata-dependent checks will not have enough information:
 
 ```bash
-python3 audit.py --project ~/Code/MyApp --no-asc
+apple-presubmit-audit --project ~/Code/MyApp --no-asc
 ```
 
 For several apps, copy [`apps.example.json`](./apps.example.json) to `apps.json`
 and run:
 
 ```bash
-python3 audit.py --config apps.json
-python3 audit.py --config apps.json --quiet
-python3 audit.py --config apps.json --json
-python3 audit.py --config apps.json --sarif > audit.sarif
+apple-presubmit-audit --config apps.json
+apple-presubmit-audit --config apps.json --quiet
+apple-presubmit-audit --config apps.json --json
+apple-presubmit-audit --config apps.json --sarif > audit.sarif
 ```
 
 Never commit App Store Connect credentials. This repository ignores common
@@ -111,7 +118,7 @@ requirement or advisory context. Fetch the same document through the CLI
 without a project or App Store Connect credentials:
 
 ```bash
-python3 audit.py --rule-catalog > /tmp/apple-presubmit-rule-catalog.json
+apple-presubmit-audit --rule-catalog > /tmp/apple-presubmit-rule-catalog.json
 ```
 
 Dynamic product, permission, benefit, and file-specific findings use `{...}`
@@ -124,8 +131,8 @@ Explain one catalog family from either its template ID or an ID copied from an
 audit finding:
 
 ```bash
-python3 audit.py --explain "OFFICIAL 2.3.7 name-length"
-python3 audit.py --explain \
+apple-presubmit-audit --explain "OFFICIAL 2.3.7 name-length"
+apple-presubmit-audit --explain \
   "READINESS CUSTOM sub-availability-com.example.product"
 ```
 

@@ -1,0 +1,15 @@
+include CHANGELOG.md
+include CONTRIBUTING.md
+include LICENSE
+include README.md
+include __init__.py
+include action.yml
+include apps.example.json
+include audit.py
+include requirements.txt
+include rule-catalog.json
+recursive-include .github/workflows *.yml
+recursive-include examples *.yml
+recursive-include tests *.json *.md *.pbxproj *.py *.swift
+global-exclude *.py[cod]
+global-exclude .DS_Store

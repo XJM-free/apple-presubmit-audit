@@ -33,6 +33,9 @@
 - `--explain RULE_ID` for a credential-free, project-free explanation of one
   static, template, or emitted finding, backed by catalog trigger, limit,
   remediation, and source metadata.
+- PEP 517 wheel and source distributions for installing the audit as the
+  `apple-presubmit-audit` command from a checkout, with the rule catalog
+  packaged beside the audit module. No package-index release is implied.
 
 ### Changed
 
