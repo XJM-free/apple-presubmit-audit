@@ -100,6 +100,12 @@ def verify_wheel(path):
             fail("unexpected Python version requirement")
         if metadata["License-Expression"] != "MIT":
             fail("wheel metadata must use the MIT license expression")
+        if (
+            metadata["Author"] != "Quiet Orbit"
+            or metadata["Author-email"]
+            or metadata["Maintainer-email"]
+        ):
+            fail("wheel author metadata must use the public pseudonym without email")
 
         requirements = {
             value.lower().replace(" ", "")
