@@ -52,19 +52,26 @@ See [`audit.py`](./audit.py) for the implementation of every check.
 
 ## Quick start
 
+Install the current source checkout in an isolated environment. This repository
+does not claim a package-index release:
+
 ```bash
 git clone https://github.com/XJM-free/apple-presubmit-audit.git
 cd apple-presubmit-audit
 
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -r requirements.txt
+python3 -m pip install .
 ```
+
+The installed command is `apple-presubmit-audit`. Running `python3 audit.py`
+from a checkout remains supported for repository development and for the
+composite Action.
 
 Audit one project against App Store Connect metadata:
 
 ```bash
-python3 audit.py \
+apple-presubmit-audit \
   --project ~/Code/MyApp \
   --bundle-id com.example.myapp \
   --key-id ABC123XYZ \
@@ -79,29 +86,77 @@ export ASC_KEY_ID=ABC123XYZ
 export ASC_ISSUER_ID=12345-67890-...
 export ASC_KEY_FILE=~/AuthKey_ABC123XYZ.p8
 
-python3 audit.py --project ~/Code/MyApp --bundle-id com.example.myapp
+apple-presubmit-audit --project ~/Code/MyApp --bundle-id com.example.myapp
 ```
 
 Code-only mode skips App Store Connect. It is useful for local iteration, but
 metadata-dependent checks will not have enough information:
 
 ```bash
-python3 audit.py --project ~/Code/MyApp --no-asc
+apple-presubmit-audit --project ~/Code/MyApp --no-asc
 ```
 
 For several apps, copy [`apps.example.json`](./apps.example.json) to `apps.json`
 and run:
 
 ```bash
-python3 audit.py --config apps.json
-python3 audit.py --config apps.json --quiet
-python3 audit.py --config apps.json --json
-python3 audit.py --config apps.json --sarif > audit.sarif
+apple-presubmit-audit --config apps.json
+apple-presubmit-audit --config apps.json --quiet
+apple-presubmit-audit --config apps.json --json
+apple-presubmit-audit --config apps.json --sarif > audit.sarif
 ```
 
 Never commit App Store Connect credentials. This repository ignores common
 private-key, provisioning-profile, environment, and local app-config files by
 default.
+
+## Machine-readable rule catalog
+
+[`rule-catalog.json`](./rule-catalog.json) lists every rule family, its evidence
+basis, default severity, and the Apple documentation used as either a direct
+requirement or advisory context. Fetch the same document through the CLI
+without a project or App Store Connect credentials:
+
+```bash
+apple-presubmit-audit --rule-catalog > /tmp/apple-presubmit-rule-catalog.json
+```
+
+Dynamic product, permission, benefit, and file-specific findings use `{...}`
+templates plus `runtime_id_pattern`. `checked_on` is the date a maintainer
+actually opened and verified an Apple source. It is not presented as Apple's
+publication or last-updated date. Tests keep the catalog aligned with every
+rule helper call and reject non-Apple source domains.
+
+Explain one catalog family from either its template ID or an ID copied from an
+audit finding:
+
+```bash
+apple-presubmit-audit --explain "OFFICIAL 2.3.7 name-length"
+apple-presubmit-audit --explain \
+  "READINESS CUSTOM sub-availability-com.example.product"
+```
+
+The explanation prints the rule's authority, default severity, trigger,
+detection limits, remediation, and source details. It does not load a project,
+read an app configuration, or initialize App Store Connect. Unknown or
+ambiguous IDs fail closed with exit code 2.
+
+`fixture_coverage` reports family-level emission by the repository's existing
+fixtures:
+
+- `baseline` — emitted for an empty temporary project with empty metadata.
+- `conditional` — not baseline, but emitted by the synthetic conditional-
+  coverage project and metadata.
+- `regression` — exercised by a dedicated anonymized `before`/`after` pair in
+  [`tests/fixtures/production-regressions`](./tests/fixtures/production-regressions).
+- `not-exercised` — covered by none of the fixture classes above.
+
+Baseline and conditional statuses only record emission; they do not claim a
+triggering/non-triggering pair or detector correctness. Regression status does
+require the named advisory to fail before the reduced project change and pass
+after it. The fixture manifest distinguishes reproduced runtime failures from
+release-audit findings and does not present either as an App Review rejection.
+All values are recalculated from real `audit_app` output in the test suite.
 
 ## GitHub Code Scanning in five minutes
 

@@ -24,6 +24,20 @@
   that upload SARIF before preserving audit exit status.
 - A runner-level smoke job that executes the local composite Action and verifies
   its exit-code and SARIF outputs.
+- A machine-readable `rule-catalog.json` and `--rule-catalog` CLI output with
+  every rule family, official Apple source links, honest source-check dates,
+  and test-derived fixture-emission status.
+- Three anonymized `before`/`after` regression fixtures for CloudKit repeated
+  saves, CloudKit empty states, and filesystem export errors, with explicit
+  evidence levels that avoid claiming an App Review rejection.
+- `--explain RULE_ID` for a credential-free, project-free explanation of one
+  static, template, or emitted finding, backed by catalog trigger, limit,
+  remediation, and source metadata.
+- PEP 517 wheel and source distributions for installing the audit as the
+  `apple-presubmit-audit` command from a checkout, with the rule catalog
+  packaged beside the audit module. No package-index release is implied.
+- `--version` output that reports installed distribution metadata, or `source`
+  when running `audit.py` directly from a checkout.
 
 ### Changed
 
@@ -31,6 +45,8 @@
 - Clarified that the catalog includes condition-triggered heuristic families and
   that metadata-only findings are not failures in `--no-asc` mode.
 - Clarified severity language and the limits of CI exit codes.
+- Versioned the rule catalog schema to v2 for per-family trigger, detection-limit,
+  and remediation explanations.
 - Reclassified regex, keyword, file-count, typography, and rejection-derived
   checks as non-blocking advisories, even when they help inspect an official
   guideline.

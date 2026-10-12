@@ -37,10 +37,21 @@ Examples of rule types we'd love:
    state. Regex, keyword, typography, file-count, and rejection-derived rules
    belong in `advisory`.
 
-3. Link the current Apple source when claiming an official requirement, or add
-   a one-line comment explaining the evidence and limits of an advisory
-4. Update `CHANGELOG.md` under `## [Unreleased]`
-5. Submit PR
+3. Add the rule family to `rule-catalog.json`. Include non-empty `trigger`,
+   `limits`, and `remediation` explanations, link an official Apple source,
+   classify it as `direct` or `context`, and set `checked_on` only after you
+   personally open and verify the page. The date is not an Apple publication
+   or last-updated date. Set `fixture_coverage` to the status derived by the
+   catalog tests: use `regression` only for an anonymized `before`/`after` case
+   in `tests/fixtures/production-regressions`; otherwise use `baseline` or
+   `conditional` only when that existing fixture emits the family, and keep all
+   other families as `not-exercised`. Baseline and conditional coverage do not
+   claim a dedicated detector regression test. Advisory explanations remain
+   heuristic and cannot use `must` or `required` as standalone words.
+4. Add a one-line source comment in `audit.py` when the detector's evidence or
+   limits are not obvious from the catalog.
+5. Update `CHANGELOG.md` under `## [Unreleased]`.
+6. Submit PR.
 
 ## Severity levels
 

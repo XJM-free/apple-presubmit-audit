@@ -11,6 +11,7 @@ htmlcov/
 venv/
 build/
 dist/
+*.egg-info/
 DerivedData/
 .playwright-cli/
 

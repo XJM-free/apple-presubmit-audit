@@ -1,4 +1,5 @@
 import ast
+import io
 import json
 import re
 import subprocess
@@ -6,17 +7,484 @@ import sys
 import tempfile
 import unittest
 import urllib.parse
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PRODUCTION_REGRESSION_ROOT = (
+    REPO_ROOT / "tests" / "fixtures" / "production-regressions"
+)
 sys.path.insert(0, str(REPO_ROOT))
 
 import audit  # noqa: E402
 
 
 class AuditRuleTests(unittest.TestCase):
+    def test_source_cli_reports_an_honest_version_without_project_inputs(self):
+        result = self._run_cli("--version")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("apple-presubmit-audit source\n", result.stdout)
+        self.assertEqual("", result.stderr)
+
+    def test_source_version_does_not_read_installed_distribution_metadata(self):
+        with (
+            mock.patch.object(audit, "__package__", ""),
+            mock.patch.object(
+                audit.metadata,
+                "version",
+                side_effect=AssertionError("source lookup must not inspect metadata"),
+            ),
+        ):
+            self.assertEqual("source", audit.cli_version())
+
+    def test_packaged_version_uses_distribution_metadata(self):
+        with (
+            mock.patch.object(audit, "__package__", "apple_presubmit_audit"),
+            mock.patch.object(
+                audit.metadata,
+                "version",
+                return_value="1.2.3",
+            ) as version,
+        ):
+            self.assertEqual("1.2.3", audit.cli_version())
+        version.assert_called_once_with("apple-presubmit-audit")
+
+    def test_packaged_version_falls_back_when_metadata_is_missing(self):
+        with (
+            mock.patch.object(audit, "__package__", "apple_presubmit_audit"),
+            mock.patch.object(
+                audit.metadata,
+                "version",
+                side_effect=audit.metadata.PackageNotFoundError,
+            ),
+        ):
+            self.assertEqual("source", audit.cli_version())
+
+    def test_rule_catalog_has_verified_apple_sources_and_valid_metadata(self):
+        catalog = audit.load_rule_catalog()
+
+        self.assertEqual(2, catalog["schema_version"])
+        fixture_coverage_values = {
+            "baseline",
+            "conditional",
+            "regression",
+            "not-exercised",
+        }
+        self.assertEqual(
+            fixture_coverage_values,
+            set(catalog["fixture_coverage_semantics"]),
+        )
+
+        sources = {source["id"]: source for source in catalog["sources"]}
+        self.assertEqual(len(catalog["sources"]), len(sources))
+        for source_id, source in sources.items():
+            with self.subTest(source=source_id):
+                parsed = urllib.parse.urlparse(source["url"])
+                self.assertEqual("https", parsed.scheme)
+                hostname = parsed.hostname or ""
+                self.assertTrue(
+                    hostname == "apple.com" or hostname.endswith(".apple.com")
+                )
+                self.assertLessEqual(
+                    date.fromisoformat(source["checked_on"]),
+                    date.today(),
+                )
+
+        rules = {rule["id"]: rule for rule in catalog["rules"]}
+        self.assertEqual(len(catalog["rules"]), len(rules))
+        placeholder_examples = {
+            "{usage_description_key}": "NSCameraUsageDescription",
+            "{product_id}": "com.example.product",
+            "{benefit_id}": "csv_export",
+            "{file_name}": "Service.swift",
+        }
+        used_source_ids = {
+            ref["source_id"]
+            for rule in catalog["rules"]
+            for ref in rule["source_refs"]
+        }
+        self.assertEqual(set(sources), used_source_ids)
+        for rule_id, rule in rules.items():
+            with self.subTest(rule=rule_id):
+                self.assertTrue(rule_id.startswith(f"{rule['basis']} "))
+                self.assertIn(rule["basis"], {"OFFICIAL", "READINESS", "ADVISORY"})
+                self.assertIn(rule["default_severity"], {"blocker", "high", "low"})
+                self.assertIn(rule["fixture_coverage"], fixture_coverage_values)
+                for field in ("trigger", "limits", "remediation"):
+                    self.assertIsInstance(rule[field], str)
+                    self.assertTrue(rule[field].strip())
+                self.assertTrue(rule["source_refs"])
+                self.assertTrue(all(
+                    ref["source_id"] in sources
+                    and ref["relationship"] in {"direct", "context"}
+                    for ref in rule["source_refs"]
+                ))
+                if rule["basis"] == "ADVISORY":
+                    self.assertNotEqual("blocker", rule["default_severity"])
+                    explanation_text = " ".join(
+                        rule[field] for field in ("trigger", "limits", "remediation")
+                    )
+                    self.assertIsNone(
+                        re.search(
+                            r"\b(?:must|required)\b",
+                            explanation_text,
+                            re.IGNORECASE,
+                        )
+                    )
+                else:
+                    self.assertIn(
+                        "direct",
+                        {ref["relationship"] for ref in rule["source_refs"]},
+                    )
+                if "{" in rule_id:
+                    sample_id = rule_id
+                    for placeholder, example in placeholder_examples.items():
+                        sample_id = sample_id.replace(placeholder, example)
+                    self.assertNotIn("{", sample_id)
+                    self.assertRegex(sample_id, rule["runtime_id_pattern"])
+                    self.assertEqual(
+                        [rule_id],
+                        [
+                            match["id"]
+                            for match in audit.match_rule_families(sample_id, catalog)
+                        ],
+                    )
+                else:
+                    self.assertNotIn("runtime_id_pattern", rule)
+                self.assertEqual(
+                    [rule_id],
+                    [
+                        match["id"]
+                        for match in audit.match_rule_families(rule_id, catalog)
+                    ],
+                )
+
+    def test_rule_catalog_covers_every_implementation_rule_family(self):
+        placeholders = {
+            "key": "usage_description_key",
+            "pid": "product_id",
+            "rule_name": "benefit_id",
+            "os.path.basename(p)": "file_name",
+        }
+
+        def rule_template(call):
+            basis = call.func.id.upper()
+            rule_arg = call.args[0]
+            if isinstance(rule_arg, ast.Constant):
+                return f"{basis} {rule_arg.value}"
+            if not isinstance(rule_arg, ast.JoinedStr):
+                self.fail(f"unsupported rule ID expression: {ast.unparse(rule_arg)}")
+            parts = []
+            for value in rule_arg.values:
+                if isinstance(value, ast.Constant):
+                    parts.append(value.value)
+                    continue
+                expression = ast.unparse(value.value)
+                if expression not in placeholders:
+                    self.fail(f"uncataloged dynamic rule placeholder: {expression}")
+                parts.append("{" + placeholders[expression] + "}")
+            return f"{basis} {''.join(parts)}"
+
+        tree = ast.parse((REPO_ROOT / "audit.py").read_text(encoding="utf-8"))
+        implementation_rules = {
+            rule_template(node): ast.literal_eval(node.args[1])
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"official", "readiness", "advisory"}
+        }
+        catalog_rules = {
+            rule["id"]: rule["default_severity"]
+            for rule in audit.load_rule_catalog()["rules"]
+        }
+
+        self.assertEqual(catalog_rules, implementation_rules)
+
+    def test_fixture_coverage_matches_actual_fixture_emission(self):
+        catalog = audit.load_rule_catalog()
+
+        def family_for(runtime_id):
+            matches = [
+                rule["id"]
+                for rule in audit.match_rule_families(runtime_id, catalog)
+            ]
+            self.assertEqual(1, len(matches), runtime_id)
+            return matches[0]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline_families = {
+                family_for(rule_id)
+                for rule_id, _severity, _passed, _message
+                in audit.audit_app(tmp, {})
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_coverage_project(root)
+            synthetic_families = {
+                family_for(rule_id)
+                for rule_id, _severity, _passed, _message
+                in audit.audit_app(root, self._coverage_metadata())
+            }
+
+        conditional_families = synthetic_families - baseline_families
+        fixture_manifest = json.loads(
+            (PRODUCTION_REGRESSION_ROOT / "cases.json").read_text(encoding="utf-8")
+        )
+        regression_families = {
+            case["rule_id"] for case in fixture_manifest["cases"]
+        }
+        actual = {
+            rule["id"]: rule["fixture_coverage"]
+            for rule in catalog["rules"]
+        }
+        expected = {
+            rule["id"]: (
+                "regression" if rule["id"] in regression_families
+                else "baseline" if rule["id"] in baseline_families
+                else "conditional" if rule["id"] in conditional_families
+                else "not-exercised"
+            )
+            for rule in catalog["rules"]
+        }
+
+        self.assertEqual(expected, actual)
+        self.assertIn("not-exercised", actual.values())
+
+    def test_anonymized_production_regressions_fail_before_and_pass_after(self):
+        manifest = json.loads(
+            (PRODUCTION_REGRESSION_ROOT / "cases.json").read_text(encoding="utf-8")
+        )
+        catalog_rules = {
+            rule["id"]: rule for rule in audit.load_rule_catalog()["rules"]
+        }
+
+        self.assertEqual(1, manifest["schema_version"])
+        self.assertGreaterEqual(len(manifest["cases"]), 3)
+        self.assertEqual(
+            len(manifest["cases"]),
+            len({case["id"] for case in manifest["cases"]}),
+        )
+
+        for case in manifest["cases"]:
+            with self.subTest(case=case["id"]):
+                self.assertIn(
+                    case["evidence_level"],
+                    {"observed-runtime-failure", "verified-production-fix"},
+                )
+                self.assertTrue(case["summary"])
+                self.assertTrue(case["change"])
+                self.assertTrue(case["before_message_fragments"])
+                self.assertIn(case["rule_id"], catalog_rules)
+                self.assertEqual(
+                    "regression",
+                    catalog_rules[case["rule_id"]]["fixture_coverage"],
+                )
+                case_root = PRODUCTION_REGRESSION_ROOT / case["id"]
+                before = {
+                    rule_id: (passed, message)
+                    for rule_id, _severity, passed, message
+                    in audit.audit_app(case_root / "before", {})
+                }
+                after = {
+                    rule_id: (passed, message)
+                    for rule_id, _severity, passed, message
+                    in audit.audit_app(case_root / "after", {})
+                }
+
+                self.assertIn(case["rule_id"], before)
+                self.assertIs(False, before[case["rule_id"]][0])
+                for fragment in case["before_message_fragments"]:
+                    self.assertIn(fragment, before[case["rule_id"]][1])
+                self.assertIn(case["rule_id"], after)
+                self.assertIs(True, after[case["rule_id"]][0])
+
+        fixture_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in PRODUCTION_REGRESSION_ROOT.rglob("*")
+            if path.is_file()
+        )
+        self.assertNotIn("com.jiexiang", fixture_text)
+        self.assertNotRegex(fixture_text, r"BEGIN (?:RSA |EC )?PRIVATE KEY")
+
+    def test_rule_catalog_cli_needs_no_project_configuration(self):
+        result = self._run_cli("--rule-catalog")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("", result.stderr)
+        self.assertEqual(audit.load_rule_catalog(), json.loads(result.stdout))
+
+    def test_explain_static_rule_short_circuits_project_and_asc_setup(self):
+        missing_project = "/tmp/apple-presubmit-explain-does-not-exist"
+        result = self._run_cli(
+            "--project",
+            missing_project,
+            "--explain",
+            "OFFICIAL 2.3.7 name-length",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("", result.stderr)
+        self.assertIn("Rule: OFFICIAL 2.3.7 name-length", result.stdout)
+        self.assertIn("Family: OFFICIAL 2.3.7 name-length", result.stdout)
+        self.assertIn("Authority: OFFICIAL", result.stdout)
+        self.assertIn("Severity: blocker", result.stdout)
+        self.assertIn("Trigger:", result.stdout)
+        self.assertIn("Limits:", result.stdout)
+        self.assertIn("Remediation:", result.stdout)
+        self.assertIn("Title: App Review Guidelines", result.stdout)
+        self.assertIn("Section: 2.3.7", result.stdout)
+        self.assertIn("https://developer.apple.com/", result.stdout)
+        guideline_source = next(
+            source
+            for source in audit.load_rule_catalog()["sources"]
+            if source["id"] == "app-review-guidelines"
+        )
+        self.assertIn(
+            f"Checked on: {guideline_source['checked_on']}",
+            result.stdout,
+        )
+        self.assertNotIn(missing_project, result.stdout)
+
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "audit.py",
+                    "--project",
+                    missing_project,
+                    "--explain",
+                    "OFFICIAL 2.3.7 name-length",
+                ],
+            ),
+            mock.patch.object(audit, "load_apps") as load_apps,
+            mock.patch.object(audit, "ASCClient") as asc_client,
+            mock.patch("sys.stdout", stdout),
+        ):
+            audit.main()
+
+        load_apps.assert_not_called()
+        asc_client.assert_not_called()
+
+    def test_explain_preserves_catalog_source_order(self):
+        result = self._run_cli("--explain", "OFFICIAL 1.5 support-url")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("", result.stderr)
+        platform_source = result.stdout.index("Title: Platform version information")
+        guideline_source = result.stdout.index("Title: App Review Guidelines")
+        self.assertLess(platform_source, guideline_source)
+        self.assertEqual(2, result.stdout.count("    Section:"))
+        self.assertEqual(2, result.stdout.count("    URL:"))
+        self.assertEqual(2, result.stdout.count("    Checked on:"))
+        self.assertEqual(2, result.stdout.count("    Relationship: direct"))
+
+    def test_explain_accepts_dynamic_and_template_rule_ids(self):
+        cases = (
+            (
+                "READINESS CUSTOM sub-availability-com.example.product",
+                "READINESS CUSTOM sub-availability-{product_id}",
+            ),
+            (
+                "READINESS CUSTOM sub-availability-{product_id}",
+                "READINESS CUSTOM sub-availability-{product_id}",
+            ),
+        )
+        for rule_id, family in cases:
+            with self.subTest(rule_id=rule_id):
+                result = self._run_cli("--explain", rule_id)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("", result.stderr)
+                self.assertIn(f"Rule: {rule_id}", result.stdout)
+                self.assertIn(f"Family: {family}", result.stdout)
+
+    def test_explain_unknown_rule_has_stable_private_error(self):
+        unknown = "not-a-rule /private/project/Secret.xcodeproj"
+        explanation, error = audit.resolve_rule_explanation(unknown)
+        result = self._run_cli("--explain", unknown)
+
+        self.assertIsNone(explanation)
+        self.assertEqual("unknown_rule_id", error["code"])
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertEqual("Configuration error: unknown rule ID\n", result.stderr)
+        self.assertNotIn(unknown, result.stderr)
+
+    def test_explain_rejects_ambiguous_runtime_id_before_scanning(self):
+        catalog = audit.load_rule_catalog()
+        source_rule = next(
+            rule
+            for rule in catalog["rules"]
+            if rule["id"] == "READINESS CUSTOM sub-availability-{product_id}"
+        )
+        overlapping = dict(source_rule)
+        overlapping["id"] = "READINESS CUSTOM overlapping-{product_id}"
+        catalog["rules"] = [*catalog["rules"], overlapping]
+        explanation, error = audit.resolve_rule_explanation(
+            "READINESS CUSTOM sub-availability-com.example.product",
+            catalog,
+        )
+
+        self.assertIsNone(explanation)
+        self.assertEqual("ambiguous_rule_id", error["code"])
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "audit.py",
+                    "--explain",
+                    "READINESS CUSTOM sub-availability-com.example.product",
+                ],
+            ),
+            mock.patch.object(audit, "load_rule_catalog", return_value=catalog),
+            mock.patch.object(audit, "load_apps") as load_apps,
+            mock.patch.object(audit, "ASCClient") as asc_client,
+            mock.patch("sys.stdout", stdout),
+            mock.patch("sys.stderr", stderr),
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            audit.main()
+
+        self.assertEqual(2, exit_context.exception.code)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual(
+            "Configuration error: rule ID matches more than one catalog family\n",
+            stderr.getvalue(),
+        )
+        load_apps.assert_not_called()
+        asc_client.assert_not_called()
+
+    def test_exact_rule_id_does_not_hide_an_overlapping_runtime_family(self):
+        catalog = audit.load_rule_catalog()
+        source_rule = next(
+            rule
+            for rule in catalog["rules"]
+            if rule["id"] == "READINESS CUSTOM sub-availability-{product_id}"
+        )
+        overlapping = dict(source_rule)
+        overlapping["id"] = "READINESS CUSTOM exact-id-overlap-{product_id}"
+        overlapping["runtime_id_pattern"] = (
+            r"^OFFICIAL 2\.3\.7 name-length$"
+        )
+        catalog["rules"] = [*catalog["rules"], overlapping]
+
+        explanation, error = audit.resolve_rule_explanation(
+            "OFFICIAL 2.3.7 name-length",
+            catalog,
+        )
+
+        self.assertIsNone(explanation)
+        self.assertEqual("ambiguous_rule_id", error["code"])
+
     def test_minimal_project_runs_the_baseline_rule_set(self):
         with tempfile.TemporaryDirectory() as tmp:
             results = audit.audit_app(tmp, {})
@@ -266,19 +734,33 @@ class AuditRuleTests(unittest.TestCase):
         self.assertEqual([], report["runs"][0]["results"])
         self.assertIn("Configuration error:", result.stderr)
 
-    def test_json_and_sarif_are_mutually_exclusive(self):
-        result = self._run_cli(
-            "--project",
-            ".",
-            "--no-asc",
-            "--json",
-            "--sarif",
-            cwd=REPO_ROOT,
-        )
+    def test_output_modes_are_mutually_exclusive(self):
+        for left, right in (
+            ("--json", "--sarif"),
+            ("--json", "--rule-catalog"),
+            ("--sarif", "--rule-catalog"),
+            ("--json", "--explain"),
+            ("--sarif", "--explain"),
+            ("--rule-catalog", "--explain"),
+        ):
+            with self.subTest(left=left, right=right):
+                arguments = [
+                    "--project",
+                    ".",
+                    "--no-asc",
+                    left,
+                    right,
+                ]
+                if left == "--explain" or right == "--explain":
+                    arguments.append("OFFICIAL 2.3.7 name-length")
+                result = self._run_cli(
+                    *arguments,
+                    cwd=REPO_ROOT,
+                )
 
-        self.assertEqual(2, result.returncode)
-        self.assertEqual("", result.stdout)
-        self.assertIn("not allowed with argument", result.stderr)
+                self.assertEqual(2, result.returncode)
+                self.assertEqual("", result.stdout)
+                self.assertIn("not allowed with argument", result.stderr)
 
     def test_config_rejects_missing_and_non_directory_project_paths(self):
         with tempfile.TemporaryDirectory() as tmp:

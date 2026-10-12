@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "cloudkit-existing-record",
+      "rule_id": "ADVISORY CUSTOM cloudkit-sync-fetch-then-modify",
+      "evidence_level": "observed-runtime-failure",
+      "summary": "A repeated CloudKit sync inserted a fresh record without server system fields and failed after the first save.",
+      "change": "Fetch the existing record before modifying and saving it.",
+      "before_message_fragments": ["SyncService.swift::syncSnapshot"]
+    },
+    {
+      "id": "cloudkit-empty-state",
+      "rule_id": "ADVISORY CUSTOM empty-state-vs-error-state",
+      "evidence_level": "verified-production-fix",
+      "summary": "A release audit found a missing CloudKit record being exposed to the user as a raw platform error.",
+      "change": "Handle the not-found case as an empty state and map other failures to stable, actionable copy.",
+      "before_message_fragments": ["CloudKit", "CloudBackupService.swift"]
+    },
+    {
+      "id": "filesystem-raw-error",
+      "rule_id": "ADVISORY CUSTOM empty-state-vs-error-state",
+      "evidence_level": "verified-production-fix",
+      "summary": "A release audit found an empty export directory being exposed to the user as a raw filesystem error.",
+      "change": "Represent the missing directory as an empty state and map other export failures to stable, actionable copy.",
+      "before_message_fragments": ["FileSystem", "ExportHistory.swift"]
+    }
+  ]
+}
